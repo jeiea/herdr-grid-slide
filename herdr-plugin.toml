@@ -6,52 +6,52 @@ description = "Move panes or focus cyclically across tabs and workspaces"
 platforms = ["macos", "linux"]
 
 [[build]]
-command = ["cargo", "build", "--release"]
+command = ["./scripts/build-plugin.sh"]
 
 [[actions]]
 id = "to-next-workspace"
 title = "Move pane to next workspace"
 contexts = ["pane"]
-command = ["./target/release/herdr-move-pane", "workspace", "next"]
+command = ["./bin/herdr-move-pane", "workspace", "next"]
 
 [[actions]]
 id = "to-previous-workspace"
 title = "Move pane to previous workspace"
 contexts = ["pane"]
-command = ["./target/release/herdr-move-pane", "workspace", "previous"]
+command = ["./bin/herdr-move-pane", "workspace", "previous"]
 
 [[actions]]
 id = "to-next-tab"
 title = "Move pane to next tab"
 contexts = ["pane"]
-command = ["./target/release/herdr-move-pane", "tab", "next"]
+command = ["./bin/herdr-move-pane", "tab", "next"]
 
 [[actions]]
 id = "to-previous-tab"
 title = "Move pane to previous tab"
 contexts = ["pane"]
-command = ["./target/release/herdr-move-pane", "tab", "previous"]
+command = ["./bin/herdr-move-pane", "tab", "previous"]
 
 [[actions]]
 id = "focus-left"
 title = "Focus left pane or wrap to previous tab"
 contexts = ["pane"]
-command = ["./target/release/herdr-move-pane", "focus", "left"]
+command = ["./bin/herdr-move-pane", "focus", "left"]
 
 [[actions]]
 id = "focus-down"
 title = "Focus lower pane or wrap to next workspace"
 contexts = ["pane"]
-command = ["./target/release/herdr-move-pane", "focus", "down"]
+command = ["./bin/herdr-move-pane", "focus", "down"]
 
 [[actions]]
 id = "focus-up"
 title = "Focus upper pane or wrap to previous workspace"
 contexts = ["pane"]
-command = ["./target/release/herdr-move-pane", "focus", "up"]
+command = ["./bin/herdr-move-pane", "focus", "up"]
 
 [[actions]]
 id = "focus-right"
 title = "Focus right pane or wrap to next tab"
 contexts = ["pane"]
-command = ["./target/release/herdr-move-pane", "focus", "right"]
+command = ["./bin/herdr-move-pane", "focus", "right"]
