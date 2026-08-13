@@ -12,16 +12,25 @@ edge it wraps to the previous or next tab; at a vertical edge it wraps to the pr
 workspace's active tab. The preferred position carries across boundaries, with reading order used to
 break ties.
 
-The focus position is stored in `HERDR_PLUGIN_STATE_DIR/focus-anchor.json`. Focus actions use a lock
-file in the same directory so rapidly invoked plugin processes update that state in order.
+The focus position is stored in `HERDR_PLUGIN_STATE_DIR/focus-anchor.json`. Focus actions do not use
+a lock file. Each successful action writes a temporary file and atomically replaces the state, which
+prevents partially written JSON but does not order overlapping processes. Either process may replace
+the anchor after the other focuses, and inputs that read the same snapshot may choose the same target.
+Each action uses the snapshot's live focused pane instead of its inherited pane context, reducing
+stale-context errors without promising exact ordering for simultaneous inputs.
+
+Actions use `HERDR_SOCKET_PATH` directly for both the session snapshot and the resulting pane
+operation, avoiding an additional Herdr CLI process per key press.
 
 ## Development
 
-Requires Deno 2.9 or later.
+Requires Rust 1.97 or later.
 
 ```sh
-deno task check
-deno task build
+cargo fmt --check
+cargo clippy --all-targets -- -D warnings
+cargo test
+cargo build --release
 herdr plugin link .
 ```
 
