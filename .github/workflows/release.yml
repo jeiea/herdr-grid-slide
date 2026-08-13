@@ -1,0 +1,187 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Verify release
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Install Rust 1.97.1
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
+          rustup default 1.97.1
+      - name: Require public repository and default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)" = public
+          test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)" = "$GITHUB_REF_NAME"
+      - name: Verify version and unused tag
+        id: version
+        run: |
+          version=$(./scripts/check-version.sh --release)
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+      - name: Run release quality gate
+        run: |
+          shellcheck scripts/*.sh tests/*.sh
+          sh tests/install_test.sh
+          sh tests/version_test.sh
+          cargo fmt --check
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked
+          cargo build --locked --release
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust 1.97.1
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --target "${{ matrix.target }}"
+          rustup default 1.97.1
+      - name: Install musl linker
+        if: startsWith(matrix.target, 'aarch64-unknown-linux') || startsWith(matrix.target, 'x86_64-unknown-linux')
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes musl-tools
+      - name: Build binary
+        env:
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+          CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
+        run: cargo build --locked --release --target "${{ matrix.target }}"
+      - name: Smoke test and stage asset
+        env:
+          TARGET: ${{ matrix.target }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          binary="target/$TARGET/release/herdr-move-pane"
+          "$binary" 2>&1 | grep -F "usage:"
+          case "$TARGET" in
+            *-unknown-linux-musl)
+              linkage=$(ldd "$binary" 2>&1 || true)
+              case "$linkage" in
+                *"statically linked"* | *"not a dynamic executable"*) ;;
+                *) echo "binary is not statically linked: $linkage" >&2; exit 1 ;;
+              esac
+              ;;
+          esac
+          cp "$binary" "herdr-move-pane-v${VERSION}-${TARGET}"
+      - name: Upload binary
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: binary-${{ matrix.target }}
+          path: herdr-move-pane-v${{ needs.prepare.outputs.version }}-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 1
+
+  release:
+    name: Publish GitHub release
+    needs: [prepare, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Download binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: binary-*
+          path: dist
+          merge-multiple: true
+      - name: Verify assets and create checksums
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          for target in \
+            aarch64-apple-darwin \
+            x86_64-apple-darwin \
+            aarch64-unknown-linux-musl \
+            x86_64-unknown-linux-musl
+          do
+            test -f "dist/herdr-move-pane-v${VERSION}-${target}"
+          done
+          cd dist
+          sha256sum herdr-move-pane-* > SHA256SUMS
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/herdr-move-pane-*
+      - name: Create draft release and tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f ref="refs/tags/$TAG" \
+            -f sha="$GITHUB_SHA"
+          gh release create "$TAG" \
+            --draft \
+            --verify-tag \
+            --generate-notes \
+            --title "$TAG"
+          gh release upload "$TAG" \
+            dist/herdr-move-pane-* \
+            dist/SHA256SUMS
+      - name: Verify and publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          expected=$(mktemp)
+          actual=$(mktemp)
+          trap 'rm -f "$expected" "$actual"' EXIT
+          printf '%s\n' \
+            SHA256SUMS \
+            "herdr-move-pane-v${VERSION}-aarch64-apple-darwin" \
+            "herdr-move-pane-v${VERSION}-aarch64-unknown-linux-musl" \
+            "herdr-move-pane-v${VERSION}-x86_64-apple-darwin" \
+            "herdr-move-pane-v${VERSION}-x86_64-unknown-linux-musl" \
+            | sort > "$expected"
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
+            --jq '.assets[].name' | sort > "$actual"
+          diff -u "$expected" "$actual"
+          gh release edit "$TAG" --draft=false
+      - name: Clean up an incomplete release
+        if: ${{ failure() || cancelled() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+        run: |
+          gh release delete "$TAG" --yes --cleanup-tag || \
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" || true
