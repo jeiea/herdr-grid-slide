@@ -7,9 +7,13 @@ and keeps focus.
 Workspace moves target the active tab of the adjacent workspace. Tab moves stay within the current
 workspace. Both use the visible `number` order and wrap at either end.
 
-Directional focus uses Herdr's geometric neighbor within the current tab. At a horizontal edge it
-wraps to the previous or next tab; at a vertical edge it wraps to the previous or next workspace's
-active tab. Boundary panes follow reading order from top-left to bottom-right.
+Directional focus preserves the cross-axis position across panes where possible. At a horizontal
+edge it wraps to the previous or next tab; at a vertical edge it wraps to the previous or next
+workspace's active tab. The preferred position carries across boundaries, with reading order used to
+break ties.
+
+The focus position is stored in `HERDR_PLUGIN_STATE_DIR/focus-anchor.json`. Focus actions use a lock
+file in the same directory so rapidly invoked plugin processes update that state in order.
 
 ## Development
 
