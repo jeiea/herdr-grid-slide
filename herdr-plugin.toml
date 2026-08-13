@@ -2,7 +2,7 @@ id = "jeiea.move-pane"
 name = "Move Pane"
 version = "0.1.0"
 min_herdr_version = "0.8.0"
-description = "Move the current pane cyclically across tabs and workspaces"
+description = "Move panes or focus cyclically across tabs and workspaces"
 platforms = ["macos", "linux"]
 
 [[build]]
@@ -31,3 +31,27 @@ id = "to-previous-tab"
 title = "Move pane to previous tab"
 contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "tab", "previous"]
+
+[[actions]]
+id = "focus-left"
+title = "Focus left pane or wrap to previous tab"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "focus", "left"]
+
+[[actions]]
+id = "focus-down"
+title = "Focus lower pane or wrap to next workspace"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "focus", "down"]
+
+[[actions]]
+id = "focus-up"
+title = "Focus upper pane or wrap to previous workspace"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "focus", "up"]
+
+[[actions]]
+id = "focus-right"
+title = "Focus right pane or wrap to next tab"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "focus", "right"]

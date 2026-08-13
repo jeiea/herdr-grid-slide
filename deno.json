@@ -12,7 +12,7 @@
     "@std/path": "jsr:@std/path@^1.1.6"
   },
   "tasks": {
-    "build": "deno compile --quiet --allow-env=HERDR_BIN_PATH,HERDR_WORKSPACE_ID,HERDR_TAB_ID,HERDR_PANE_ID --allow-run -o bin/herdr-move-pane src/main.ts",
+    "build": "deno compile --quiet --allow-env=HERDR_BIN_PATH,HERDR_SOCKET_PATH,HERDR_WORKSPACE_ID,HERDR_TAB_ID,HERDR_PANE_ID --allow-net --allow-read --allow-run --allow-write -o bin/herdr-move-pane src/main.ts",
     "check": {
       "dependencies": ["check:fmt", "check:lint", "check:types", "test"]
     },
@@ -20,6 +20,6 @@
     "check:lint": "deno lint",
     "check:types": "deno check src/main.ts tests/main_test.ts tests/fake_herdr.ts",
     "fmt": "deno fmt",
-    "test": "deno test --allow-env --allow-read --allow-run --allow-write"
+    "test": "deno test --allow-env --allow-net --allow-read --allow-run --allow-write"
   }
 }
