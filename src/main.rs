@@ -141,6 +141,25 @@ struct PaneRef {
     pane_id: String,
 }
 
+#[derive(Deserialize)]
+struct PaneMoveResult {
+    move_result: MoveOutcome,
+}
+
+/// What herdr made of a move. A move it declined comes back with `changed: false`
+/// and a reason instead of an error.
+#[derive(Deserialize)]
+struct MoveOutcome {
+    changed: bool,
+    created_tab: Option<TabRef>,
+    reason: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TabRef {
+    tab_id: String,
+}
+
 impl LayoutNode {
     fn direction(&self) -> Option<SplitDirection> {
         match self {
@@ -201,6 +220,57 @@ struct GridRow<'a> {
     node: &'a LayoutNode,
     panes: Vec<&'a str>,
     path: Vec<bool>,
+}
+
+/// The grid a tab is being balanced into: its panes in reading order and how many of
+/// them belong on each row.
+struct GridPlan<'a> {
+    focus_pane_id: &'a str,
+    order: Vec<&'a str>,
+    row_sizes: Vec<usize>,
+    tab_id: &'a str,
+    workspace_id: &'a str,
+}
+
+/// The tab panes are parked in while their own tab is rebuilt around them.
+#[derive(Default)]
+struct ScratchTab<'a> {
+    panes: Vec<&'a str>,
+    tab_id: Option<String>,
+}
+
+impl<'a> GridPlan<'a> {
+    /// The panes of each row, in reading order.
+    fn rows(&self) -> Vec<&[&'a str]> {
+        let mut rows = Vec::new();
+        let mut rest = self.order.as_slice();
+        for size in &self.row_sizes {
+            let (row, tail) = rest.split_at(*size);
+            rows.push(row);
+            rest = tail;
+        }
+        rows
+    }
+
+    /// Whether the tab is already shaped like the target grid, however its splits are
+    /// nested and whichever pane sits in which cell.
+    fn matches(&self, grid: &[GridRow]) -> bool {
+        grid.iter()
+            .map(|row| row.panes.len())
+            .eq(self.row_sizes.iter().copied())
+    }
+
+    /// Whether the tab still holds exactly the panes the plan was made for.
+    fn holds(&self, grid: &[GridRow]) -> bool {
+        let mut placed: Vec<_> = grid
+            .iter()
+            .flat_map(|row| row.panes.iter().copied())
+            .collect();
+        let mut expected = self.order.clone();
+        placed.sort_unstable();
+        expected.sort_unstable();
+        placed == expected
+    }
 }
 
 fn main() {
@@ -369,7 +439,7 @@ fn new_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
 /// Spreads the panes of a tab over an even grid, in reading order. A tab that is
 /// already a grid of the right shape only needs resizing, and panes sitting in the
 /// wrong cell are swapped into place, so running this twice changes nothing the
-/// second time. Rebuilding a layout that is not a grid is not supported yet.
+/// second time. Anything else has to be taken apart and rebuilt.
 fn balance(context: &Context, client: &mut SocketClient) -> Result<()> {
     let snapshot = read_snapshot(client)?;
     let navigation = navigation_context(context, &snapshot);
@@ -389,12 +459,29 @@ fn balance(context: &Context, client: &mut SocketClient) -> Result<()> {
     if order.len() < 2 {
         return Ok(());
     }
-    let row_sizes = grid_row_sizes(order.len(), layout_bounds(snapshot_layout)?)?;
-    let grid = read_grid(&layout.root)
-        .filter(|grid| grid.iter().map(|row| row.panes.len()).eq(row_sizes))
-        .ok_or("balance cannot yet rebuild this layout")?;
+    let plan = GridPlan {
+        focus_pane_id: navigation.pane_id,
+        row_sizes: grid_row_sizes(order.len(), layout_bounds(snapshot_layout)?)?,
+        order,
+        tab_id,
+        workspace_id: navigation.workspace_id,
+    };
+    match read_grid(&layout.root).filter(|grid| plan.matches(grid)) {
+        Some(grid) => sort_grid(client, &plan, &layout.root, &grid),
+        None => rebuild_grid(client, &plan),
+    }
+}
+
+/// Puts a tab that is already the right grid in order: panes sitting in the wrong
+/// cell trade places, then every split is resized.
+fn sort_grid(
+    client: &mut SocketClient,
+    plan: &GridPlan,
+    root: &LayoutNode,
+    grid: &[GridRow],
+) -> Result<()> {
     let placed = grid.iter().flat_map(|row| row.panes.iter().copied());
-    let swaps = swaps_towards(placed.collect(), &order);
+    let swaps = swaps_towards(placed.collect(), &plan.order);
     for (index, (source, target)) in swaps.iter().enumerate() {
         let swap = client.request(
             "pane.swap",
@@ -403,21 +490,21 @@ fn balance(context: &Context, client: &mut SocketClient) -> Result<()> {
         if let Err(error) = swap {
             return Err(with_focus_restored(
                 client,
-                navigation.pane_id,
+                plan.focus_pane_id,
                 index > 0,
                 error,
             ));
         }
     }
-    for (path, ratio) in grid_ratios(&layout.root, &grid) {
+    for (path, ratio) in grid_ratios(root, grid) {
         let resize = client.request(
             "layout.set_split_ratio",
-            json!({"tab_id": tab_id, "path": path, "ratio": ratio}),
+            json!({"tab_id": plan.tab_id, "path": path, "ratio": ratio}),
         );
         if let Err(error) = resize {
             return Err(with_focus_restored(
                 client,
-                navigation.pane_id,
+                plan.focus_pane_id,
                 !swaps.is_empty(),
                 error,
             ));
@@ -425,9 +512,161 @@ fn balance(context: &Context, client: &mut SocketClient) -> Result<()> {
     }
     if !swaps.is_empty() {
         // Swapping panes carries the focus along with the pane that moved away.
-        client.request("pane.focus", json!({"pane_id": navigation.pane_id}))?;
+        client.request("pane.focus", json!({"pane_id": plan.focus_pane_id}))?;
     }
     Ok(())
+}
+
+/// Takes a tab apart and lays it out again as the target grid. herdr refuses to move
+/// a pane inside its own tab, so every pane but the first goes out to a scratch tab
+/// and comes back one at a time; the last one to leave takes the empty scratch tab
+/// with it. A rebuild interrupted halfway is not undone -- the panes are brought
+/// home, but the shape they land in is whatever the moves left behind.
+fn rebuild_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
+    let (anchor, staged) = plan
+        .order
+        .split_first()
+        .ok_or("nothing to balance in an empty tab")?;
+    let mut scratch = ScratchTab::default();
+    for pane in staged {
+        let destination = match &scratch.tab_id {
+            Some(tab_id) => {
+                json!({"type": "tab", "tab_id": tab_id, "split": "right", "ratio": 0.5})
+            }
+            None => json!({"type": "new_tab", "workspace_id": plan.workspace_id}),
+        };
+        match move_pane_to(client, pane, destination) {
+            Ok(outcome) => {
+                scratch.tab_id = scratch.tab_id.or(outcome.created_tab.map(|tab| tab.tab_id));
+                scratch.panes.push(pane);
+            }
+            Err(error) => return Err(recovered(client, plan, anchor, &scratch, error)),
+        }
+        if scratch.tab_id.is_none() {
+            // Without the tab id there is nowhere to fetch the pane back from, so
+            // name it rather than leave the user hunting for it.
+            let error = format!("herdr moved {pane} to a new tab without saying which one");
+            return Err(with_focus_back(client, plan.focus_pane_id, error));
+        }
+    }
+    for (pane, target, direction) in grid_moves(&plan.rows()) {
+        let destination = attachment(plan.tab_id, target, direction);
+        if let Err(error) = move_pane_to(client, pane, destination) {
+            return Err(recovered(client, plan, anchor, &scratch, error));
+        }
+        scratch.panes.retain(|staged| *staged != pane);
+    }
+    // The panes are home from here on, but they travelled through another tab to get
+    // there, so every way out of this still owes the user their focus back.
+    match settle_rebuilt_grid(client, plan) {
+        Ok(()) => Ok(()),
+        Err(error) => Err(with_focus_back(client, plan.focus_pane_id, error)),
+    }
+}
+
+/// Checks the rebuilt tab came out as planned, evens out its splits and puts the
+/// focus back.
+fn settle_rebuilt_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
+    let layout = read_layout(client, plan.tab_id).map_err(|error| {
+        format!(
+            "rebuilt {} but could not read it back: {error}",
+            plan.tab_id
+        )
+    })?;
+    let grid = read_grid(&layout.root)
+        .filter(|grid| plan.matches(grid) && plan.holds(grid))
+        .ok_or_else(|| {
+            format!(
+                "{} did not come out as the expected grid; left the sizes alone",
+                plan.tab_id
+            )
+        })?;
+    for (path, ratio) in grid_ratios(&layout.root, &grid) {
+        client
+            .request(
+                "layout.set_split_ratio",
+                json!({"tab_id": plan.tab_id, "path": path, "ratio": ratio}),
+            )
+            .map_err(|error| {
+                format!(
+                    "rebuilt {} but could not even out the sizes: {error}",
+                    plan.tab_id
+                )
+            })?;
+    }
+    client.request("pane.focus", json!({"pane_id": plan.focus_pane_id}))?;
+    Ok(())
+}
+
+/// Where a pane goes when it is hung off one that is already in the tab.
+fn attachment(tab_id: &str, target_pane_id: &str, direction: SplitDirection) -> Value {
+    json!({
+        "type": "tab",
+        "tab_id": tab_id,
+        "target_pane_id": target_pane_id,
+        "split": direction.as_str(),
+        "ratio": 0.5,
+    })
+}
+
+/// Hands back a failure with the focus put where it started, best effort.
+fn with_focus_back(client: &mut SocketClient, pane_id: &str, error: String) -> String {
+    let _ = client.request("pane.focus", json!({"pane_id": pane_id}));
+    error
+}
+
+/// Moves one pane and insists that herdr actually moved it: a refused move comes back
+/// as `changed: false` with a reason rather than as an error, and reading that as
+/// success would leave the rebuild working from a layout that never happened.
+fn move_pane_to(
+    client: &mut SocketClient,
+    pane_id: &str,
+    destination: Value,
+) -> Result<MoveOutcome> {
+    let result = client.request(
+        "pane.move",
+        json!({"pane_id": pane_id, "destination": destination, "focus": false}),
+    )?;
+    let moved = serde_json::from_value::<PaneMoveResult>(result)
+        .map_err(|_| "herdr api pane.move returned an invalid response".to_owned())?
+        .move_result;
+    if !moved.changed {
+        let reason = moved.reason.unwrap_or_else(|| "no reason given".to_owned());
+        return Err(format!("herdr refused to move {pane_id}: {reason}"));
+    }
+    Ok(moved)
+}
+
+/// Cleans up after a rebuild that stopped halfway. Whatever is still parked in the
+/// scratch tab is dropped back beside the anchor, because losing sight of a terminal
+/// is worse than a crooked layout, and the failure that started it all is reported
+/// together with anything that could not be brought home.
+fn recovered(
+    client: &mut SocketClient,
+    plan: &GridPlan,
+    anchor: &str,
+    scratch: &ScratchTab,
+    error: String,
+) -> String {
+    let Some(scratch_tab) = &scratch.tab_id else {
+        return error;
+    };
+    let mut stranded = Vec::new();
+    for pane in &scratch.panes {
+        let destination = attachment(plan.tab_id, anchor, SplitDirection::Right);
+        if move_pane_to(client, pane, destination).is_err() {
+            stranded.push(*pane);
+        }
+    }
+    let _ = client.request("pane.focus", json!({"pane_id": plan.focus_pane_id}));
+    if stranded.is_empty() {
+        return format!("could not rebuild {}: {error}", plan.tab_id);
+    }
+    format!(
+        "could not rebuild {}: {error}; {} left in {scratch_tab}",
+        plan.tab_id,
+        stranded.join(", ")
+    )
 }
 
 /// Reports a failure that struck after panes had already been traded. The layout is
@@ -925,6 +1164,43 @@ fn grid_ratios(root: &LayoutNode, grid: &[GridRow]) -> Vec<(Vec<bool>, f64)> {
             grid.iter()
                 .flat_map(|row| ratio_updates(row.node, SplitDirection::Right, row.path.clone())),
         )
+        .collect()
+}
+
+/// The moves that draw the target grid, each one attaching a pane to a pane already
+/// back in the tab. The rows are hung off the anchor first, then each row is filled
+/// in, and a parent is always attached before its children, so whatever a move needs
+/// to attach to is there by the time it runs. herdr turns the pane a move names into
+/// a split holding that pane and the newcomer, so attaching the second half's first
+/// pane to the first half's first pane, parents before children, grows exactly the
+/// tree [`join_evenly`] describes.
+fn grid_moves<'a>(rows: &[&[&'a str]]) -> Vec<(&'a str, &'a str, SplitDirection)> {
+    let row_anchors: Vec<_> = rows.iter().filter_map(|row| row.first().copied()).collect();
+    join_evenly(&row_anchors, SplitDirection::Down)
+        .into_iter()
+        .chain(
+            rows.iter()
+                .flat_map(|row| join_evenly(row, SplitDirection::Right)),
+        )
+        .collect()
+}
+
+/// Joins panes into a balanced tree by hanging the second half's first pane off the
+/// first half's first pane and halving from there. Halving keeps every split near an
+/// even share, which matters because herdr clamps ratios to [0.1, 0.9] and a tree
+/// built one pane at a time would soon ask for shares outside that.
+fn join_evenly<'a>(
+    panes: &[&'a str],
+    direction: SplitDirection,
+) -> Vec<(&'a str, &'a str, SplitDirection)> {
+    if panes.len() < 2 {
+        return Vec::new();
+    }
+    let middle = panes.len().div_ceil(2);
+    [(panes[middle], panes[0], direction)]
+        .into_iter()
+        .chain(join_evenly(&panes[..middle], direction))
+        .chain(join_evenly(&panes[middle..], direction))
         .collect()
 }
 

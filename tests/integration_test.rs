@@ -1217,67 +1217,335 @@ fn balance_settles_after_one_pass() {
 }
 
 #[test]
-fn balance_reports_a_layout_it_cannot_reshape_yet() {
-    // Three rows of 1, 1 and 2 panes cannot become the 2 by 2 grid without moving
-    // panes between rows, which balance does not do yet.
+fn balance_rebuilds_a_tangled_tab_through_a_scratch_tab() {
+    // The right half is a column of three, so the tab is not a grid of flat rows and
+    // has to be taken apart. herdr will not move a pane inside its own tab, so every
+    // pane but the anchor goes out to one scratch tab and comes back in the order
+    // that draws the target grid. No pane is created and no layout is applied: the
+    // request list below is the whole story.
     let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 200, 33),
-        pane("pane-b", 0, 33, 200, 33),
-        pane("pane-c", 0, 66, 100, 34),
+        pane("pane-a", 0, 0, 100, 100),
+        pane("pane-b", 100, 0, 100, 33),
+        pane("pane-c", 100, 33, 100, 33),
         pane("pane-d", 100, 66, 100, 34),
     ]))
     .with_replies(
         "layout.export",
-        [export_reply(split(
-            "down",
-            leaf("pane-a"),
-            split(
+        [
+            export_reply(split(
+                "right",
+                leaf("pane-a"),
+                split(
+                    "down",
+                    leaf("pane-b"),
+                    split("down", leaf("pane-c"), leaf("pane-d")),
+                ),
+            )),
+            export_reply(split(
                 "down",
-                leaf("pane-b"),
+                split("right", leaf("pane-a"), leaf("pane-b")),
                 split("right", leaf("pane-c"), leaf("pane-d")),
-            ),
-        ))],
-    );
+            )),
+        ],
+    )
+    .with_replies("pane.move", [new_tab_reply("tab-scratch"), move_reply()]);
 
     let run = run_balance(&herdr, "pane-a");
 
+    run.assert_success();
     assert_eq!(
-        run.assert_failure(),
-        "balance cannot yet rebuild this layout\n"
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            move_call("pane-b", new_tab_destination()),
+            move_call("pane-c", scratch_destination()),
+            move_call("pane-d", scratch_destination()),
+            move_call("pane-c", attach_destination("pane-a", "down")),
+            move_call("pane-b", attach_destination("pane-a", "right")),
+            move_call("pane-d", attach_destination("pane-c", "right")),
+            export_call(),
+            ratio_call(&[], 0.5),
+            ratio_call(&[false], 0.5),
+            ratio_call(&[true], 0.5),
+            focus_call("pane-a"),
+        ]
     );
-    assert_eq!(run.requests, [snapshot_call(), export_call()]);
 }
 
 #[test]
-fn balance_reports_a_row_that_is_split_the_other_way() {
-    // The first row stacks two panes on top of each other, so the tab is not a grid
-    // of flat rows at all and cannot be resized into one.
+fn balance_halves_the_rows_it_rebuilds_so_no_split_runs_lopsided() {
+    // Five panes make rows of 2, 2 and 1. Joining three rows by halving attaches the
+    // last row to the anchor first and the middle row underneath it, which keeps
+    // every ratio well inside the range herdr accepts.
     let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 100, 66),
-        pane("pane-b", 100, 0, 100, 33),
-        pane("pane-c", 100, 33, 100, 33),
-        pane("pane-d", 0, 66, 200, 34),
+        pane("pane-a", 0, 0, 80, 33),
+        pane("pane-b", 80, 0, 80, 33),
+        pane("pane-c", 0, 33, 80, 33),
+        pane("pane-d", 80, 33, 80, 33),
+        pane("pane-e", 0, 66, 160, 34),
     ]))
     .with_replies(
         "layout.export",
-        [export_reply(split(
-            "down",
-            split(
+        [
+            export_reply(split(
                 "right",
                 leaf("pane-a"),
-                split("down", leaf("pane-b"), leaf("pane-c")),
-            ),
-            leaf("pane-d"),
-        ))],
+                split(
+                    "down",
+                    leaf("pane-b"),
+                    split(
+                        "down",
+                        leaf("pane-c"),
+                        split("down", leaf("pane-d"), leaf("pane-e")),
+                    ),
+                ),
+            )),
+            export_reply(split(
+                "down",
+                split(
+                    "down",
+                    split("right", leaf("pane-a"), leaf("pane-b")),
+                    split("right", leaf("pane-c"), leaf("pane-d")),
+                ),
+                leaf("pane-e"),
+            )),
+        ],
+    )
+    .with_replies("pane.move", [new_tab_reply("tab-scratch"), move_reply()]);
+
+    let run = run_balance(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            move_call("pane-b", new_tab_destination()),
+            move_call("pane-c", scratch_destination()),
+            move_call("pane-d", scratch_destination()),
+            move_call("pane-e", scratch_destination()),
+            move_call("pane-e", attach_destination("pane-a", "down")),
+            move_call("pane-c", attach_destination("pane-a", "down")),
+            move_call("pane-b", attach_destination("pane-a", "right")),
+            move_call("pane-d", attach_destination("pane-c", "right")),
+            export_call(),
+            ratio_call(&[], 2.0 / 3.0),
+            ratio_call(&[false], 0.5),
+            ratio_call(&[false, false], 0.5),
+            ratio_call(&[false, true], 0.5),
+            focus_call("pane-a"),
+        ]
+    );
+}
+
+#[test]
+fn balance_stops_when_herdr_reports_a_move_it_did_not_make() {
+    // herdr answers a refused move with changed: false rather than an error, which
+    // must not read as success.
+    let herdr = tangled_herdr().with_replies(
+        "pane.move",
+        [
+            new_tab_reply("tab-scratch"),
+            no_op_move_reply("same_tab"),
+            move_reply(),
+        ],
     );
 
     let run = run_balance(&herdr, "pane-a");
 
     assert_eq!(
         run.assert_failure(),
-        "balance cannot yet rebuild this layout\n"
+        "could not rebuild tab-main: herdr refused to move pane-c: same_tab\n"
     );
-    assert_eq!(run.requests, [snapshot_call(), export_call()]);
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            move_call("pane-b", new_tab_destination()),
+            move_call("pane-c", scratch_destination()),
+            move_call("pane-b", attach_destination("pane-a", "right")),
+            focus_call("pane-a"),
+        ]
+    );
+}
+
+#[test]
+fn balance_puts_staged_panes_back_when_a_move_fails() {
+    let herdr = tangled_herdr().with_replies(
+        "pane.move",
+        [
+            new_tab_reply("tab-scratch"),
+            move_reply(),
+            Err("pane is gone".to_owned()),
+            move_reply(),
+        ],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "could not rebuild tab-main: pane.move failed: pane is gone\n"
+    );
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            move_call("pane-b", new_tab_destination()),
+            move_call("pane-c", scratch_destination()),
+            move_call("pane-d", scratch_destination()),
+            move_call("pane-b", attach_destination("pane-a", "right")),
+            move_call("pane-c", attach_destination("pane-a", "right")),
+            focus_call("pane-a"),
+        ]
+    );
+}
+
+#[test]
+fn balance_brings_back_only_what_is_still_in_the_scratch_tab() {
+    // The second reattachment fails once pane-c is already home, so only pane-b and
+    // pane-d are still parked and only they are fetched back.
+    let herdr = tangled_herdr().with_replies(
+        "pane.move",
+        [
+            new_tab_reply("tab-scratch"),
+            move_reply(),
+            move_reply(),
+            move_reply(),
+            Err("pane is gone".to_owned()),
+            move_reply(),
+        ],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "could not rebuild tab-main: pane.move failed: pane is gone\n"
+    );
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            move_call("pane-b", new_tab_destination()),
+            move_call("pane-c", scratch_destination()),
+            move_call("pane-d", scratch_destination()),
+            move_call("pane-c", attach_destination("pane-a", "down")),
+            // The reattachment that fails, and then the same pane on its way home.
+            move_call("pane-b", attach_destination("pane-a", "right")),
+            move_call("pane-b", attach_destination("pane-a", "right")),
+            move_call("pane-d", attach_destination("pane-a", "right")),
+            focus_call("pane-a"),
+        ]
+    );
+}
+
+#[test]
+fn balance_puts_the_focus_back_on_the_pane_it_started_from() {
+    // The panes are all home by the time the resizing fails, but they moved through
+    // another tab to get there, so the focus still has to be put back -- and on the
+    // pane the user was in, which is not the anchor the rebuild hung everything off.
+    let herdr = tangled_herdr()
+        .with_replies(
+            "layout.export",
+            [
+                export_reply(split(
+                    "right",
+                    leaf("pane-a"),
+                    split(
+                        "down",
+                        leaf("pane-b"),
+                        split("down", leaf("pane-c"), leaf("pane-d")),
+                    ),
+                )),
+                export_reply(split(
+                    "down",
+                    split("right", leaf("pane-a"), leaf("pane-b")),
+                    split("right", leaf("pane-c"), leaf("pane-d")),
+                )),
+            ],
+        )
+        .with_replies("pane.move", [new_tab_reply("tab-scratch"), move_reply()])
+        .with_replies(
+            "layout.set_split_ratio",
+            [Err("path is out of date".to_owned())],
+        );
+
+    let run = run_balance(&herdr, "pane-c");
+
+    assert_eq!(
+        run.assert_failure(),
+        "rebuilt tab-main but could not even out the sizes: \
+         layout.set_split_ratio failed: path is out of date\n"
+    );
+    assert_eq!(run.requests.last(), Some(&focus_call("pane-c")));
+}
+
+#[test]
+fn balance_names_the_panes_it_could_not_bring_back() {
+    // Losing a terminal is worse than a crooked layout, so a failed recovery says
+    // exactly which panes are still sitting in which tab.
+    let herdr = tangled_herdr().with_replies(
+        "pane.move",
+        [
+            new_tab_reply("tab-scratch"),
+            move_reply(),
+            Err("pane is gone".to_owned()),
+        ],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "could not rebuild tab-main: pane.move failed: pane is gone; \
+         pane-b, pane-c left in tab-scratch\n"
+    );
+}
+
+#[test]
+fn balance_stops_when_the_rebuilt_tab_is_not_the_grid() {
+    // A pane went missing while the tab was being rebuilt, so the paths worked out
+    // from this tree would point at the wrong panes.
+    let herdr = tangled_herdr()
+        .with_replies(
+            "layout.export",
+            [
+                export_reply(split(
+                    "right",
+                    leaf("pane-a"),
+                    split(
+                        "down",
+                        leaf("pane-b"),
+                        split("down", leaf("pane-c"), leaf("pane-d")),
+                    ),
+                )),
+                export_reply(split(
+                    "down",
+                    split("right", leaf("pane-a"), leaf("pane-b")),
+                    leaf("pane-c"),
+                )),
+            ],
+        )
+        .with_replies("pane.move", [new_tab_reply("tab-scratch"), move_reply()]);
+
+    let run = run_balance(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "tab-main did not come out as the expected grid; left the sizes alone\n"
+    );
+    assert!(
+        !run.requests
+            .iter()
+            .any(|call| call.method == "layout.set_split_ratio")
+    );
+    assert_eq!(run.requests.last(), Some(&focus_call("pane-a")));
 }
 
 /// A fake herdr socket server. It speaks the real protocol -- one connection per
@@ -1521,6 +1789,30 @@ fn run_balance(herdr: &FakeHerdr, pane_id: &str) -> Run {
     herdr.run("workspace-1", "tab-main", pane_id, &["balance"])
 }
 
+/// Four panes that need a rebuild: a tall column beside the anchor, which reading
+/// order wants as two rows of two. Only the `pane.move` replies differ between the
+/// scenarios that exercise the rebuild going wrong.
+fn tangled_herdr() -> FakeHerdr {
+    FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 100),
+        pane("pane-b", 100, 0, 100, 33),
+        pane("pane-c", 100, 33, 100, 33),
+        pane("pane-d", 100, 66, 100, 34),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "right",
+            leaf("pane-a"),
+            split(
+                "down",
+                leaf("pane-b"),
+                split("down", leaf("pane-c"), leaf("pane-d")),
+            ),
+        ))],
+    )
+}
+
 /// A tab holding exactly the given panes, which the grid scenarios build on.
 fn tab_snapshot(panes: Vec<Value>) -> Value {
     snapshot(
@@ -1563,6 +1855,26 @@ fn swap_reply() -> Reply {
     Ok(json!({"type": "pane_swap"}))
 }
 
+fn move_reply() -> Reply {
+    Ok(json!({"type": "pane_move", "move_result": {"changed": true}}))
+}
+
+fn new_tab_reply(tab_id: &str) -> Reply {
+    Ok(json!({
+        "type": "pane_move",
+        "move_result": {"changed": true, "created_tab": {"tab_id": tab_id}},
+    }))
+}
+
+/// herdr answers a move it declined with `changed: false` and a reason instead of an
+/// error, for instance when the destination turns out to be the pane's own tab.
+fn no_op_move_reply(reason: &str) -> Reply {
+    Ok(json!({
+        "type": "pane_move",
+        "move_result": {"changed": false, "reason": reason},
+    }))
+}
+
 /// The ratio a fake tree carries is irrelevant: `new-pane` recomputes every ratio
 /// it touches from the shape of the tree.
 fn split(direction: &str, first: Value, second: Value) -> Value {
@@ -1593,6 +1905,32 @@ fn split_call(target_pane_id: &str, direction: &str) -> Call {
             "focus": true,
         }),
     )
+}
+
+/// A rebuild never carries the focus along; it is put back once at the end.
+fn move_call(pane_id: &str, destination: Value) -> Call {
+    call(
+        "pane.move",
+        json!({"pane_id": pane_id, "destination": destination, "focus": false}),
+    )
+}
+
+fn new_tab_destination() -> Value {
+    json!({"type": "new_tab", "workspace_id": "workspace-1"})
+}
+
+fn scratch_destination() -> Value {
+    json!({"type": "tab", "tab_id": "tab-scratch", "split": "right", "ratio": 0.5})
+}
+
+fn attach_destination(target_pane_id: &str, split: &str) -> Value {
+    json!({
+        "type": "tab",
+        "tab_id": "tab-main",
+        "target_pane_id": target_pane_id,
+        "split": split,
+        "ratio": 0.5,
+    })
 }
 
 fn swap_call(source_pane_id: &str, target_pane_id: &str) -> Call {
