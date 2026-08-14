@@ -299,7 +299,7 @@ fn reports_the_herdr_error_that_rejected_an_action() {
 fn new_pane_follows_the_only_split_direction_in_the_tab() {
     // The focused pane is far taller than wide, but every split in the tab runs
     // rightwards, so the new pane joins that row instead of starting a column.
-    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 20, 100),
         pane("pane-b", 20, 0, 80, 100),
     ]))
@@ -334,7 +334,7 @@ fn new_pane_follows_the_only_split_direction_in_the_tab() {
 
 #[test]
 fn new_pane_splits_a_wide_pane_sideways_when_directions_are_mixed() {
-    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 100, 40),
         pane("pane-b", 100, 0, 100, 40),
         pane("pane-c", 0, 40, 200, 40),
@@ -378,7 +378,7 @@ fn new_pane_splits_a_wide_pane_sideways_when_directions_are_mixed() {
 
 #[test]
 fn new_pane_splits_the_lone_pane_of_a_tab_by_its_shape() {
-    let herdr = FakeHerdr::new(new_pane_snapshot(vec![pane("pane-a", 0, 0, 100, 30)]))
+    let herdr = FakeHerdr::new(tab_snapshot(vec![pane("pane-a", 0, 0, 100, 30)]))
         .with_replies(
             "layout.export",
             [
@@ -407,7 +407,7 @@ fn new_pane_splits_the_lone_pane_of_a_tab_by_its_shape() {
 fn new_pane_splits_downward_on_the_two_to_one_boundary() {
     // Cells are about twice as tall as wide, so a pane only counts as wide once
     // its width passes twice its height. The boundary itself splits downwards.
-    let herdr = FakeHerdr::new(new_pane_snapshot(vec![pane("pane-a", 0, 0, 80, 40)]))
+    let herdr = FakeHerdr::new(tab_snapshot(vec![pane("pane-a", 0, 0, 80, 40)]))
         .with_replies(
             "layout.export",
             [
@@ -434,7 +434,7 @@ fn new_pane_splits_downward_on_the_two_to_one_boundary() {
 
 #[test]
 fn new_pane_evens_out_every_split_of_the_nested_run() {
-    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 50, 100),
         pane("pane-b", 50, 0, 25, 100),
         pane("pane-c", 75, 0, 25, 100),
@@ -481,7 +481,7 @@ fn new_pane_evens_out_every_split_of_the_nested_run() {
 fn new_pane_counts_a_crosswise_subtree_as_one_slot() {
     // The right half is a column of two panes. It stays one slot of the row and
     // keeps its own ratio, so the row splits 2:1 rather than 2:2.
-    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 100, 40),
         pane("pane-b", 100, 0, 100, 20),
         pane("pane-c", 100, 20, 100, 20),
@@ -521,7 +521,7 @@ fn new_pane_counts_a_crosswise_subtree_as_one_slot() {
 
 #[test]
 fn new_pane_stops_before_splitting_a_zoomed_tab() {
-    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 100, 40),
         pane("pane-b", 100, 0, 100, 40),
     ]))
@@ -538,14 +538,14 @@ fn new_pane_stops_before_splitting_a_zoomed_tab() {
 
     assert_eq!(
         run.assert_failure(),
-        "tab-new is zoomed; unzoom it before adding a pane\n"
+        "tab-main is zoomed; unzoom it before adding a pane\n"
     );
     assert_eq!(run.requests, [snapshot_call(), export_call()]);
 }
 
 #[test]
 fn new_pane_stops_before_splitting_when_snapshot_and_layout_disagree() {
-    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 100, 40),
         pane("pane-b", 100, 0, 100, 40),
     ]))
@@ -562,14 +562,14 @@ fn new_pane_stops_before_splitting_when_snapshot_and_layout_disagree() {
 
     assert_eq!(
         run.assert_failure(),
-        "tab-new changed while it was being read; try again\n"
+        "tab-main changed while it was being read; try again\n"
     );
     assert_eq!(run.requests, [snapshot_call(), export_call()]);
 }
 
 #[test]
 fn new_pane_leaves_the_ratios_alone_when_the_created_pane_is_missing() {
-    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 100, 40),
         pane("pane-b", 100, 0, 100, 40),
     ]))
@@ -586,7 +586,7 @@ fn new_pane_leaves_the_ratios_alone_when_the_created_pane_is_missing() {
 
     assert_eq!(
         run.assert_failure(),
-        "created pane-new but it is missing from tab-new; left the sizes alone\n"
+        "created pane-new but it is missing from tab-main; left the sizes alone\n"
     );
     assert_eq!(
         run.requests,
@@ -601,7 +601,7 @@ fn new_pane_leaves_the_ratios_alone_when_the_created_pane_is_missing() {
 
 #[test]
 fn new_pane_reports_a_created_pane_that_could_not_be_evened_out() {
-    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 100, 40),
         pane("pane-b", 100, 0, 100, 40),
     ]))
@@ -645,7 +645,7 @@ fn new_pane_reports_a_created_pane_that_could_not_be_evened_out() {
 fn new_pane_evens_out_a_run_that_leans_on_its_second_side() {
     // Splitting the last pane of a row grows the run down the second branch, so the
     // shares run 1:3, then 1:2, then 1:1 from the root down.
-    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 34, 100),
         pane("pane-b", 34, 0, 33, 100),
         pane("pane-c", 67, 0, 33, 100),
@@ -690,7 +690,7 @@ fn new_pane_evens_out_a_run_that_leans_on_its_second_side() {
 
 #[test]
 fn new_pane_reports_a_created_pane_it_could_not_read_back() {
-    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 100, 40),
         pane("pane-b", 100, 0, 100, 40),
     ]))
@@ -707,7 +707,7 @@ fn new_pane_reports_a_created_pane_it_could_not_read_back() {
 
     assert_eq!(
         run.assert_failure(),
-        "created pane-new but could not read tab-new back: layout.export failed: tab is gone\n"
+        "created pane-new but could not read tab-main back: layout.export failed: tab is gone\n"
     );
     assert_eq!(
         run.requests,
@@ -722,7 +722,7 @@ fn new_pane_reports_a_created_pane_it_could_not_read_back() {
 
 #[test]
 fn new_pane_stops_evening_out_at_the_first_rejected_ratio() {
-    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 50, 100),
         pane("pane-b", 50, 0, 25, 100),
         pane("pane-c", 75, 0, 25, 100),
@@ -771,6 +771,513 @@ fn new_pane_stops_evening_out_at_the_first_rejected_ratio() {
             ratio_call(&[false], 2.0 / 3.0),
         ]
     );
+}
+
+#[test]
+fn balance_lays_a_wide_tab_out_in_more_columns_than_rows() {
+    // 4 panes across 200x50 cells: sqrt(4 * 200 / (50 * 2)) rounds to 3 columns,
+    // leaving rows of 3 and 1.
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 67, 25),
+        pane("pane-b", 67, 0, 66, 25),
+        pane("pane-c", 133, 0, 67, 25),
+        pane("pane-d", 0, 25, 200, 25),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "down",
+            split(
+                "right",
+                split("right", leaf("pane-a"), leaf("pane-b")),
+                leaf("pane-c"),
+            ),
+            leaf("pane-d"),
+        ))],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            ratio_call(&[], 0.5),
+            ratio_call(&[false], 2.0 / 3.0),
+            ratio_call(&[false, false], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn balance_stacks_a_tall_tab_into_a_single_column() {
+    // 4 panes across 50x200 cells: sqrt(4 * 50 / (200 * 2)) rounds to 1 column.
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 50, 50),
+        pane("pane-b", 0, 50, 50, 50),
+        pane("pane-c", 0, 100, 50, 50),
+        pane("pane-d", 0, 150, 50, 50),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "down",
+            split("down", leaf("pane-a"), leaf("pane-b")),
+            split("down", leaf("pane-c"), leaf("pane-d")),
+        ))],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            ratio_call(&[], 0.5),
+            ratio_call(&[false], 0.5),
+            ratio_call(&[true], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn balance_lets_the_last_row_hold_fewer_panes() {
+    // 5 panes across 160x100 cells: 2 columns, so the rows hold 2, 2 and 1.
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 80, 33),
+        pane("pane-b", 80, 0, 80, 33),
+        pane("pane-c", 0, 33, 80, 33),
+        pane("pane-d", 80, 33, 80, 33),
+        pane("pane-e", 0, 66, 160, 34),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "down",
+            split(
+                "down",
+                split("right", leaf("pane-a"), leaf("pane-b")),
+                split("right", leaf("pane-c"), leaf("pane-d")),
+            ),
+            leaf("pane-e"),
+        ))],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            ratio_call(&[], 2.0 / 3.0),
+            ratio_call(&[false], 0.5),
+            ratio_call(&[false, false], 0.5),
+            ratio_call(&[false, true], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn balance_accepts_rows_however_their_splits_are_nested() {
+    // Both rows hold three panes but nest them the other way around, which is the
+    // same grid, so the panes are only resized.
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 50),
+        pane("pane-b", 100, 0, 100, 50),
+        pane("pane-c", 200, 0, 100, 50),
+        pane("pane-d", 0, 50, 100, 50),
+        pane("pane-e", 100, 50, 100, 50),
+        pane("pane-f", 200, 50, 100, 50),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "down",
+            split(
+                "right",
+                leaf("pane-a"),
+                split("right", leaf("pane-b"), leaf("pane-c")),
+            ),
+            split(
+                "right",
+                split("right", leaf("pane-d"), leaf("pane-e")),
+                leaf("pane-f"),
+            ),
+        ))],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            ratio_call(&[], 0.5),
+            ratio_call(&[false], 1.0 / 3.0),
+            ratio_call(&[false, true], 0.5),
+            ratio_call(&[true], 2.0 / 3.0),
+            ratio_call(&[true, false], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn balance_swaps_only_the_panes_that_sit_out_of_reading_order() {
+    // The grid already has the right shape, but the tree holds pane-c where reading
+    // order wants pane-b, so one swap is enough and the focus is put back.
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 50),
+        pane("pane-b", 100, 0, 100, 50),
+        pane("pane-c", 0, 50, 100, 50),
+        pane("pane-d", 100, 50, 100, 50),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "down",
+            split("right", leaf("pane-a"), leaf("pane-c")),
+            split("right", leaf("pane-b"), leaf("pane-d")),
+        ))],
+    )
+    .with_replies("pane.swap", [swap_reply()]);
+
+    let run = run_balance(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            swap_call("pane-c", "pane-b"),
+            ratio_call(&[], 0.5),
+            ratio_call(&[false], 0.5),
+            ratio_call(&[true], 0.5),
+            focus_call("pane-a"),
+        ]
+    );
+}
+
+#[test]
+fn balance_untangles_a_three_way_rotation_without_repeating_a_swap() {
+    // The row holds [b, c, a] but should read [a, b, c]. Rotating three panes takes
+    // two swaps, and keeping the local copy in step stops a settled pane from being
+    // swapped away again.
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 50),
+        pane("pane-b", 100, 0, 100, 50),
+        pane("pane-c", 200, 0, 100, 50),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "right",
+            split("right", leaf("pane-b"), leaf("pane-c")),
+            leaf("pane-a"),
+        ))],
+    )
+    .with_replies("pane.swap", [swap_reply()]);
+
+    let run = run_balance(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            swap_call("pane-b", "pane-a"),
+            swap_call("pane-c", "pane-b"),
+            ratio_call(&[], 2.0 / 3.0),
+            ratio_call(&[false], 0.5),
+            focus_call("pane-a"),
+        ]
+    );
+}
+
+#[test]
+fn balance_puts_the_focus_back_when_a_later_swap_fails() {
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 50),
+        pane("pane-b", 100, 0, 100, 50),
+        pane("pane-c", 200, 0, 100, 50),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "right",
+            split("right", leaf("pane-b"), leaf("pane-c")),
+            leaf("pane-a"),
+        ))],
+    )
+    .with_replies("pane.swap", [swap_reply(), Err("pane is gone".to_owned())]);
+
+    let run = run_balance(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "swapped some panes but could not finish balancing: pane.swap failed: pane is gone\n"
+    );
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            swap_call("pane-b", "pane-a"),
+            swap_call("pane-c", "pane-b"),
+            focus_call("pane-a"),
+        ]
+    );
+}
+
+#[test]
+fn balance_puts_the_focus_back_when_resizing_fails_after_a_swap() {
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 50),
+        pane("pane-b", 100, 0, 100, 50),
+        pane("pane-c", 0, 50, 100, 50),
+        pane("pane-d", 100, 50, 100, 50),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "down",
+            split("right", leaf("pane-a"), leaf("pane-c")),
+            split("right", leaf("pane-b"), leaf("pane-d")),
+        ))],
+    )
+    .with_replies("pane.swap", [swap_reply()])
+    .with_replies(
+        "layout.set_split_ratio",
+        [Err("path is out of date".to_owned())],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "swapped some panes but could not finish balancing: \
+         layout.set_split_ratio failed: path is out of date\n"
+    );
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            swap_call("pane-c", "pane-b"),
+            ratio_call(&[], 0.5),
+            focus_call("pane-a"),
+        ]
+    );
+}
+
+#[test]
+fn balance_keeps_the_error_alone_when_the_first_swap_fails() {
+    // Nothing moved yet, so there is no focus to put back.
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 50),
+        pane("pane-b", 100, 0, 100, 50),
+        pane("pane-c", 0, 50, 100, 50),
+        pane("pane-d", 100, 50, 100, 50),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "down",
+            split("right", leaf("pane-a"), leaf("pane-c")),
+            split("right", leaf("pane-b"), leaf("pane-d")),
+        ))],
+    )
+    .with_replies("pane.swap", [Err("pane is gone".to_owned())]);
+
+    let run = run_balance(&herdr, "pane-a");
+
+    assert_eq!(run.assert_failure(), "pane.swap failed: pane is gone\n");
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            swap_call("pane-c", "pane-b")
+        ]
+    );
+}
+
+#[test]
+fn balance_stops_before_touching_a_tab_with_no_area() {
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 0, 0),
+        pane("pane-b", 0, 0, 0, 0),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split("right", leaf("pane-a"), leaf("pane-b")))],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "herdr reported a tab with no area; cannot balance\n"
+    );
+    assert_eq!(run.requests, [snapshot_call(), export_call()]);
+}
+
+#[test]
+fn balance_leaves_a_tab_with_one_pane_alone() {
+    let herdr = FakeHerdr::new(tab_snapshot(vec![pane("pane-a", 0, 0, 200, 100)]))
+        .with_replies("layout.export", [export_reply(leaf("pane-a"))]);
+
+    let run = run_balance(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(run.requests, [snapshot_call(), export_call()]);
+}
+
+#[test]
+fn balance_stops_before_touching_a_zoomed_tab() {
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 50),
+        pane("pane-b", 100, 0, 100, 50),
+    ]))
+    .with_replies(
+        "layout.export",
+        [zoomed_export_reply(split(
+            "right",
+            leaf("pane-a"),
+            leaf("pane-b"),
+        ))],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "tab-main is zoomed; unzoom it before balancing\n"
+    );
+    assert_eq!(run.requests, [snapshot_call(), export_call()]);
+}
+
+#[test]
+fn balance_settles_after_one_pass() {
+    let panes = vec![
+        pane("pane-a", 0, 0, 100, 50),
+        pane("pane-b", 100, 0, 100, 50),
+        pane("pane-c", 0, 50, 100, 50),
+        pane("pane-d", 100, 50, 100, 50),
+    ];
+    let tangled = FakeHerdr::new(tab_snapshot(panes.clone()))
+        .with_replies(
+            "layout.export",
+            [export_reply(split(
+                "down",
+                split("right", leaf("pane-a"), leaf("pane-c")),
+                split("right", leaf("pane-b"), leaf("pane-d")),
+            ))],
+        )
+        .with_replies("pane.swap", [swap_reply()]);
+
+    let first = run_balance(&tangled, "pane-a");
+
+    first.assert_success();
+    assert!(first.requests.contains(&swap_call("pane-c", "pane-b")));
+
+    // The swap above trades the two pane ids, and setting ratios leaves the shape
+    // alone, so this is the layout the first pass left behind.
+    let settled = FakeHerdr::new(tab_snapshot(panes)).with_replies(
+        "layout.export",
+        [export_reply(split(
+            "down",
+            split("right", leaf("pane-a"), leaf("pane-b")),
+            split("right", leaf("pane-c"), leaf("pane-d")),
+        ))],
+    );
+
+    let second = run_balance(&settled, "pane-a");
+
+    second.assert_success();
+    assert_eq!(
+        second.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            ratio_call(&[], 0.5),
+            ratio_call(&[false], 0.5),
+            ratio_call(&[true], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn balance_reports_a_layout_it_cannot_reshape_yet() {
+    // Three rows of 1, 1 and 2 panes cannot become the 2 by 2 grid without moving
+    // panes between rows, which balance does not do yet.
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 200, 33),
+        pane("pane-b", 0, 33, 200, 33),
+        pane("pane-c", 0, 66, 100, 34),
+        pane("pane-d", 100, 66, 100, 34),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "down",
+            leaf("pane-a"),
+            split(
+                "down",
+                leaf("pane-b"),
+                split("right", leaf("pane-c"), leaf("pane-d")),
+            ),
+        ))],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "balance cannot yet rebuild this layout\n"
+    );
+    assert_eq!(run.requests, [snapshot_call(), export_call()]);
+}
+
+#[test]
+fn balance_reports_a_row_that_is_split_the_other_way() {
+    // The first row stacks two panes on top of each other, so the tab is not a grid
+    // of flat rows at all and cannot be resized into one.
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 66),
+        pane("pane-b", 100, 0, 100, 33),
+        pane("pane-c", 100, 33, 100, 33),
+        pane("pane-d", 0, 66, 200, 34),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "down",
+            split(
+                "right",
+                leaf("pane-a"),
+                split("down", leaf("pane-b"), leaf("pane-c")),
+            ),
+            leaf("pane-d"),
+        ))],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "balance cannot yet rebuild this layout\n"
+    );
+    assert_eq!(run.requests, [snapshot_call(), export_call()]);
 }
 
 /// A fake herdr socket server. It speaks the real protocol -- one connection per
@@ -1007,15 +1514,19 @@ fn pane_layout(tab_id: &str, prefix: &str) -> Value {
 /// Every `new-pane` scenario runs the same command against the same tab, so only
 /// the tree and the focused pane change between them.
 fn run_new_pane(herdr: &FakeHerdr, pane_id: &str) -> Run {
-    herdr.run("workspace-1", "tab-new", pane_id, &["new-pane"])
+    herdr.run("workspace-1", "tab-main", pane_id, &["new-pane"])
 }
 
-/// A tab holding exactly the given panes, which every `new-pane` scenario builds on.
-fn new_pane_snapshot(panes: Vec<Value>) -> Value {
+fn run_balance(herdr: &FakeHerdr, pane_id: &str) -> Run {
+    herdr.run("workspace-1", "tab-main", pane_id, &["balance"])
+}
+
+/// A tab holding exactly the given panes, which the grid scenarios build on.
+fn tab_snapshot(panes: Vec<Value>) -> Value {
     snapshot(
-        json!([layout("tab-new", panes)]),
-        json!([tab("workspace-1", "tab-new", 1)]),
-        json!([workspace("workspace-1", "tab-new", 1)]),
+        json!([layout("tab-main", panes)]),
+        json!([tab("workspace-1", "tab-main", 1)]),
+        json!([workspace("workspace-1", "tab-main", 1)]),
     )
 }
 
@@ -1032,7 +1543,7 @@ fn layout_export_reply(root: Value, zoomed: bool) -> Reply {
         "type": "layout_export",
         "layout": {
             "workspace_id": "workspace-1",
-            "tab_id": "tab-new",
+            "tab_id": "tab-main",
             "zoomed": zoomed,
             "focused_pane_id": "pane-a",
             "root": root,
@@ -1046,6 +1557,10 @@ fn split_reply(pane_id: &str) -> Reply {
 
 fn ratio_reply() -> Reply {
     Ok(json!({"type": "layout_split_ratio_set"}))
+}
+
+fn swap_reply() -> Reply {
+    Ok(json!({"type": "pane_swap"}))
 }
 
 /// The ratio a fake tree carries is irrelevant: `new-pane` recomputes every ratio
@@ -1065,7 +1580,7 @@ fn leaf(pane_id: &str) -> Value {
 }
 
 fn export_call() -> Call {
-    call("layout.export", json!({"tab_id": "tab-new"}))
+    call("layout.export", json!({"tab_id": "tab-main"}))
 }
 
 fn split_call(target_pane_id: &str, direction: &str) -> Call {
@@ -1080,10 +1595,17 @@ fn split_call(target_pane_id: &str, direction: &str) -> Call {
     )
 }
 
+fn swap_call(source_pane_id: &str, target_pane_id: &str) -> Call {
+    call(
+        "pane.swap",
+        json!({"source_pane_id": source_pane_id, "target_pane_id": target_pane_id}),
+    )
+}
+
 fn ratio_call(path: &[bool], ratio: f64) -> Call {
     call(
         "layout.set_split_ratio",
-        json!({"tab_id": "tab-new", "path": path, "ratio": ratio}),
+        json!({"tab_id": "tab-main", "path": path, "ratio": ratio}),
     )
 }
 

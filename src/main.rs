@@ -47,6 +47,7 @@ enum Command {
     },
     Focus(PaneDirection),
     NewPane,
+    Balance,
 }
 
 struct Context {
@@ -195,6 +196,13 @@ struct FocusTarget<'a> {
     pane: &'a LayoutPane,
 }
 
+/// One row of a tab read as a grid, with the path of the subtree holding it.
+struct GridRow<'a> {
+    node: &'a LayoutNode,
+    panes: Vec<&'a str>,
+    path: Vec<bool>,
+}
+
 fn main() {
     if let Err(error) = run() {
         eprintln!("{error}");
@@ -210,13 +218,18 @@ fn run() -> Result<()> {
         Command::Focus(direction) => focus_with_anchor(&context, direction, &mut client),
         Command::Move { direction, scope } => move_pane(&context, direction, scope, &mut client),
         Command::NewPane => new_pane(&context, &mut client),
+        Command::Balance => balance(&context, &mut client),
     }
 }
 
 fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
     let args: Vec<_> = args.collect();
     match args.as_slice() {
-        [operation] if operation == "new-pane" => Ok(Command::NewPane),
+        [operation] => match operation.as_str() {
+            "new-pane" => Ok(Command::NewPane),
+            "balance" => Ok(Command::Balance),
+            _ => Err(usage()),
+        },
         [operation, direction] if operation == "focus" => {
             Ok(Command::Focus(match direction.as_str() {
                 "left" => PaneDirection::Left,
@@ -244,7 +257,8 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
 }
 
 fn usage() -> String {
-    "usage: herdr-move-pane <workspace|tab> <next|previous> | focus <direction> | new-pane".into()
+    "usage: herdr-move-pane <workspace|tab> <next|previous> | focus <direction> | new-pane | balance"
+        .into()
 }
 
 fn read_context(require_focus: bool) -> Result<Context> {
@@ -350,6 +364,86 @@ fn new_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
             })?;
     }
     Ok(())
+}
+
+/// Spreads the panes of a tab over an even grid, in reading order. A tab that is
+/// already a grid of the right shape only needs resizing, and panes sitting in the
+/// wrong cell are swapped into place, so running this twice changes nothing the
+/// second time. Rebuilding a layout that is not a grid is not supported yet.
+fn balance(context: &Context, client: &mut SocketClient) -> Result<()> {
+    let snapshot = read_snapshot(client)?;
+    let navigation = navigation_context(context, &snapshot);
+    let tab_id = navigation.tab_id;
+    let snapshot_layout = find_layout(&snapshot, tab_id)?;
+    let layout = read_layout(client, tab_id)?;
+    if !holds_the_same_panes(snapshot_layout, &layout.root) {
+        return Err(format!(
+            "{tab_id} changed while it was being read; try again"
+        ));
+    }
+    if layout.zoomed {
+        // Unzooming here would leave the tab zoomed out if a later step failed.
+        return Err(format!("{tab_id} is zoomed; unzoom it before balancing"));
+    }
+    let order = reading_order(snapshot_layout);
+    if order.len() < 2 {
+        return Ok(());
+    }
+    let row_sizes = grid_row_sizes(order.len(), layout_bounds(snapshot_layout)?)?;
+    let grid = read_grid(&layout.root)
+        .filter(|grid| grid.iter().map(|row| row.panes.len()).eq(row_sizes))
+        .ok_or("balance cannot yet rebuild this layout")?;
+    let placed = grid.iter().flat_map(|row| row.panes.iter().copied());
+    let swaps = swaps_towards(placed.collect(), &order);
+    for (index, (source, target)) in swaps.iter().enumerate() {
+        let swap = client.request(
+            "pane.swap",
+            json!({"source_pane_id": source, "target_pane_id": target}),
+        );
+        if let Err(error) = swap {
+            return Err(with_focus_restored(
+                client,
+                navigation.pane_id,
+                index > 0,
+                error,
+            ));
+        }
+    }
+    for (path, ratio) in grid_ratios(&layout.root, &grid) {
+        let resize = client.request(
+            "layout.set_split_ratio",
+            json!({"tab_id": tab_id, "path": path, "ratio": ratio}),
+        );
+        if let Err(error) = resize {
+            return Err(with_focus_restored(
+                client,
+                navigation.pane_id,
+                !swaps.is_empty(),
+                error,
+            ));
+        }
+    }
+    if !swaps.is_empty() {
+        // Swapping panes carries the focus along with the pane that moved away.
+        client.request("pane.focus", json!({"pane_id": navigation.pane_id}))?;
+    }
+    Ok(())
+}
+
+/// Reports a failure that struck after panes had already been traded. The layout is
+/// left half sorted either way, so the focus is put back where it started, best
+/// effort, and the original failure is what the user hears about.
+fn with_focus_restored(
+    client: &mut SocketClient,
+    pane_id: &str,
+    swapped: bool,
+    error: String,
+) -> String {
+    if !swapped {
+        return error;
+    }
+    let _ = client.request("pane.focus", json!({"pane_id": pane_id}));
+    format!("swapped some panes but could not finish balancing: {error}")
 }
 
 fn read_snapshot(client: &mut SocketClient) -> Result<Snapshot> {
@@ -776,6 +870,81 @@ fn even_ratios(descent: &[(&LayoutNode, bool)]) -> Vec<(Vec<bool>, f64)> {
     ratio_updates(descent[run_root].0, direction, path.collect())
 }
 
+fn reading_order(layout: &TabLayout) -> Vec<&str> {
+    let mut panes: Vec<_> = layout.panes.iter().collect();
+    panes.sort_by(|left, right| compare_reading_order(left, right));
+    panes
+        .into_iter()
+        .map(|pane| pane.pane_id.as_str())
+        .collect()
+}
+
+/// How many panes each row of the target grid holds. Terminal cells are roughly
+/// twice as tall as they are wide, which the column count corrects for; the last row
+/// is allowed to come up short.
+fn grid_row_sizes(count: usize, bounds: Bounds) -> Result<Vec<usize>> {
+    if bounds.width <= 0.0 || bounds.height <= 0.0 {
+        return Err("herdr reported a tab with no area; cannot balance".into());
+    }
+    let columns = (count as f64 * bounds.width / (bounds.height * 2.0))
+        .sqrt()
+        .round()
+        .max(1.0) as usize;
+    let columns = columns.min(count);
+    let rows = count.div_ceil(columns);
+    Ok((0..rows)
+        .map(|row| columns.min(count - row * columns))
+        .collect())
+}
+
+/// The tab read as rows of panes: the top-level `down` run gives the rows, and the
+/// `right` run inside a row gives its panes. A tab shaped any other way is not a
+/// grid, which is what tells the two idempotent paths apart from a rebuild.
+fn read_grid(root: &LayoutNode) -> Option<Vec<GridRow<'_>>> {
+    run_slots(root, SplitDirection::Down, Vec::new())
+        .into_iter()
+        .map(|(node, path)| {
+            let panes = run_slots(node, SplitDirection::Right, path.clone())
+                .into_iter()
+                .map(|(cell, _)| match cell {
+                    LayoutNode::Pane { pane_id } => Some(pane_id.as_str()),
+                    LayoutNode::Split { .. } => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(GridRow { node, panes, path })
+        })
+        .collect()
+}
+
+/// Ratios for the whole grid: the rows share the tab evenly and the panes of a row
+/// share that row evenly, closest to the root first.
+fn grid_ratios(root: &LayoutNode, grid: &[GridRow]) -> Vec<(Vec<bool>, f64)> {
+    ratio_updates(root, SplitDirection::Down, Vec::new())
+        .into_iter()
+        .chain(
+            grid.iter()
+                .flat_map(|row| ratio_updates(row.node, SplitDirection::Right, row.path.clone())),
+        )
+        .collect()
+}
+
+/// The swaps that put the panes into reading order, keeping a local copy in step so
+/// that a pane already in place is never swapped away again.
+fn swaps_towards<'a>(mut placed: Vec<&'a str>, order: &[&'a str]) -> Vec<(&'a str, &'a str)> {
+    let mut swaps = Vec::new();
+    for (index, wanted) in order.iter().enumerate() {
+        if placed[index] == *wanted {
+            continue;
+        }
+        let Some(found) = placed.iter().position(|pane| pane == wanted) else {
+            continue;
+        };
+        swaps.push((placed[index], *wanted));
+        placed.swap(index, found);
+    }
+    swaps
+}
+
 fn ratio_updates(
     node: &LayoutNode,
     direction: SplitDirection,
@@ -798,6 +967,26 @@ fn ratio_updates(
         .chain(ratio_updates(first, direction, child_path(&path, false)))
         .chain(ratio_updates(second, direction, child_path(&path, true)))
         .collect()
+}
+
+/// The children that leave a run of same-direction splits, each with its path. These
+/// are the slots [`slot_count`] counts.
+fn run_slots(
+    node: &LayoutNode,
+    direction: SplitDirection,
+    path: Vec<bool>,
+) -> Vec<(&LayoutNode, Vec<bool>)> {
+    match node {
+        LayoutNode::Split {
+            direction: node_direction,
+            first,
+            second,
+        } if *node_direction == direction => run_slots(first, direction, child_path(&path, false))
+            .into_iter()
+            .chain(run_slots(second, direction, child_path(&path, true)))
+            .collect(),
+        _ => vec![(node, path)],
+    }
 }
 
 fn slot_count(node: &LayoutNode, direction: SplitDirection) -> usize {
