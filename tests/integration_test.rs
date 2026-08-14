@@ -5,7 +5,7 @@ use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::{Command as ProcessCommand, Output};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
@@ -1548,6 +1548,38 @@ fn balance_stops_when_the_rebuilt_tab_is_not_the_grid() {
     assert_eq!(run.requests.last(), Some(&focus_call("pane-a")));
 }
 
+#[test]
+fn every_action_in_the_manifest_is_a_command_the_plugin_accepts() {
+    // The manifest is what herdr actually runs, so a typo there only shows up when a
+    // key is pressed. Running the real binary on each binding catches it here.
+    let manifest = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/herdr-plugin.toml"))
+        .expect("the manifest sits next to Cargo.toml");
+    let commands = manifest_commands(&manifest);
+
+    assert!(
+        !commands.is_empty(),
+        "the manifest binds no action to the plugin"
+    );
+    assert_eq!(
+        commands.len(),
+        manifest.matches("[[actions]]").count(),
+        "an action whose command does not run the plugin binary would slip past this test"
+    );
+    for arguments in commands {
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-move-pane"))
+            .args(&arguments)
+            .env_clear()
+            .output()
+            .unwrap();
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !stderr.starts_with("usage:"),
+            "the manifest binds {arguments:?}, which the plugin rejects: {stderr}"
+        );
+    }
+}
+
 /// A fake herdr socket server. It speaks the real protocol -- one connection per
 /// request, one JSON line in and one out -- and records every request in order.
 struct FakeHerdr {
@@ -1597,7 +1629,7 @@ impl FakeHerdr {
         let socket_path = self.directory.join("herdr.sock");
         let stop = Arc::new(AtomicBool::new(false));
         let server = self.serve(&socket_path, Arc::clone(&stop));
-        let output = Command::new(env!("CARGO_BIN_EXE_herdr-move-pane"))
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-move-pane"))
             .args(args)
             .env("HERDR_PANE_ID", pane_id)
             .env("HERDR_PLUGIN_STATE_DIR", &self.state_path)
@@ -1997,6 +2029,27 @@ fn call(method: &str, params: Value) -> Call {
         method: method.to_owned(),
         params,
     }
+}
+
+/// The arguments each manifest action passes to the plugin binary, skipping the
+/// build command and anything else that does not run it.
+fn manifest_commands(manifest: &str) -> Vec<Vec<String>> {
+    manifest
+        .lines()
+        .filter_map(|line| line.strip_prefix("command = ["))
+        .map(|list| {
+            list.trim_end_matches(']')
+                .split(',')
+                .map(|item| item.trim().trim_matches('"').to_owned())
+                .collect::<Vec<_>>()
+        })
+        .filter(|command| {
+            command
+                .first()
+                .is_some_and(|program| program.ends_with("/herdr-move-pane"))
+        })
+        .map(|command| command[1..].to_vec())
+        .collect()
 }
 
 fn temp_dir() -> PathBuf {

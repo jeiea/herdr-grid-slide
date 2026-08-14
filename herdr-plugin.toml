@@ -2,7 +2,7 @@ id = "jeiea.move-pane"
 name = "Move Pane"
 version = "0.1.0"
 min_herdr_version = "0.8.0"
-description = "Move panes or focus cyclically across tabs and workspaces"
+description = "Move panes or focus across tabs and workspaces, add panes and balance tab layouts"
 platforms = ["macos", "linux"]
 
 [[build]]
@@ -55,3 +55,15 @@ id = "focus-right"
 title = "Focus right pane or wrap to next tab"
 contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "focus", "right"]
+
+[[actions]]
+id = "new-pane"
+title = "Create pane and even out its row or column"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "new-pane"]
+
+[[actions]]
+id = "balance"
+title = "Balance panes into even grid"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "balance"]
