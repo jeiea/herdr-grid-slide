@@ -295,6 +295,484 @@ fn reports_the_herdr_error_that_rejected_an_action() {
     );
 }
 
+#[test]
+fn new_pane_follows_the_only_split_direction_in_the_tab() {
+    // The focused pane is far taller than wide, but every split in the tab runs
+    // rightwards, so the new pane joins that row instead of starting a column.
+    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+        pane("pane-a", 0, 0, 20, 100),
+        pane("pane-b", 20, 0, 80, 100),
+    ]))
+    .with_replies(
+        "layout.export",
+        [
+            export_reply(split("right", leaf("pane-a"), leaf("pane-b"))),
+            export_reply(split(
+                "right",
+                split("right", leaf("pane-a"), leaf("pane-new")),
+                leaf("pane-b"),
+            )),
+        ],
+    )
+    .with_replies("pane.split", [split_reply("pane-new")]);
+
+    let run = run_new_pane(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            split_call("pane-a", "right"),
+            export_call(),
+            ratio_call(&[], 2.0 / 3.0),
+            ratio_call(&[false], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn new_pane_splits_a_wide_pane_sideways_when_directions_are_mixed() {
+    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 40),
+        pane("pane-b", 100, 0, 100, 40),
+        pane("pane-c", 0, 40, 200, 40),
+    ]))
+    .with_replies(
+        "layout.export",
+        [
+            export_reply(split(
+                "down",
+                split("right", leaf("pane-a"), leaf("pane-b")),
+                leaf("pane-c"),
+            )),
+            export_reply(split(
+                "down",
+                split(
+                    "right",
+                    split("right", leaf("pane-a"), leaf("pane-new")),
+                    leaf("pane-b"),
+                ),
+                leaf("pane-c"),
+            )),
+        ],
+    )
+    .with_replies("pane.split", [split_reply("pane-new")]);
+
+    let run = run_new_pane(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            split_call("pane-a", "right"),
+            export_call(),
+            ratio_call(&[false], 2.0 / 3.0),
+            ratio_call(&[false, false], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn new_pane_splits_the_lone_pane_of_a_tab_by_its_shape() {
+    let herdr = FakeHerdr::new(new_pane_snapshot(vec![pane("pane-a", 0, 0, 100, 30)]))
+        .with_replies(
+            "layout.export",
+            [
+                export_reply(leaf("pane-a")),
+                export_reply(split("right", leaf("pane-a"), leaf("pane-new"))),
+            ],
+        )
+        .with_replies("pane.split", [split_reply("pane-new")]);
+
+    let run = run_new_pane(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            split_call("pane-a", "right"),
+            export_call(),
+            ratio_call(&[], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn new_pane_splits_downward_on_the_two_to_one_boundary() {
+    // Cells are about twice as tall as wide, so a pane only counts as wide once
+    // its width passes twice its height. The boundary itself splits downwards.
+    let herdr = FakeHerdr::new(new_pane_snapshot(vec![pane("pane-a", 0, 0, 80, 40)]))
+        .with_replies(
+            "layout.export",
+            [
+                export_reply(leaf("pane-a")),
+                export_reply(split("down", leaf("pane-a"), leaf("pane-new"))),
+            ],
+        )
+        .with_replies("pane.split", [split_reply("pane-new")]);
+
+    let run = run_new_pane(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            split_call("pane-a", "down"),
+            export_call(),
+            ratio_call(&[], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn new_pane_evens_out_every_split_of_the_nested_run() {
+    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+        pane("pane-a", 0, 0, 50, 100),
+        pane("pane-b", 50, 0, 25, 100),
+        pane("pane-c", 75, 0, 25, 100),
+    ]))
+    .with_replies(
+        "layout.export",
+        [
+            export_reply(split(
+                "right",
+                split("right", leaf("pane-a"), leaf("pane-b")),
+                leaf("pane-c"),
+            )),
+            export_reply(split(
+                "right",
+                split(
+                    "right",
+                    split("right", leaf("pane-a"), leaf("pane-new")),
+                    leaf("pane-b"),
+                ),
+                leaf("pane-c"),
+            )),
+        ],
+    )
+    .with_replies("pane.split", [split_reply("pane-new")]);
+
+    let run = run_new_pane(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            split_call("pane-a", "right"),
+            export_call(),
+            ratio_call(&[], 0.75),
+            ratio_call(&[false], 2.0 / 3.0),
+            ratio_call(&[false, false], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn new_pane_counts_a_crosswise_subtree_as_one_slot() {
+    // The right half is a column of two panes. It stays one slot of the row and
+    // keeps its own ratio, so the row splits 2:1 rather than 2:2.
+    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 40),
+        pane("pane-b", 100, 0, 100, 20),
+        pane("pane-c", 100, 20, 100, 20),
+    ]))
+    .with_replies(
+        "layout.export",
+        [
+            export_reply(split(
+                "right",
+                leaf("pane-a"),
+                split("down", leaf("pane-b"), leaf("pane-c")),
+            )),
+            export_reply(split(
+                "right",
+                split("right", leaf("pane-a"), leaf("pane-new")),
+                split("down", leaf("pane-b"), leaf("pane-c")),
+            )),
+        ],
+    )
+    .with_replies("pane.split", [split_reply("pane-new")]);
+
+    let run = run_new_pane(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            split_call("pane-a", "right"),
+            export_call(),
+            ratio_call(&[], 2.0 / 3.0),
+            ratio_call(&[false], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn new_pane_stops_before_splitting_a_zoomed_tab() {
+    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 40),
+        pane("pane-b", 100, 0, 100, 40),
+    ]))
+    .with_replies(
+        "layout.export",
+        [zoomed_export_reply(split(
+            "right",
+            leaf("pane-a"),
+            leaf("pane-b"),
+        ))],
+    );
+
+    let run = run_new_pane(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "tab-new is zoomed; unzoom it before adding a pane\n"
+    );
+    assert_eq!(run.requests, [snapshot_call(), export_call()]);
+}
+
+#[test]
+fn new_pane_stops_before_splitting_when_snapshot_and_layout_disagree() {
+    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 40),
+        pane("pane-b", 100, 0, 100, 40),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "right",
+            leaf("pane-a"),
+            leaf("pane-late"),
+        ))],
+    );
+
+    let run = run_new_pane(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "tab-new changed while it was being read; try again\n"
+    );
+    assert_eq!(run.requests, [snapshot_call(), export_call()]);
+}
+
+#[test]
+fn new_pane_leaves_the_ratios_alone_when_the_created_pane_is_missing() {
+    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 40),
+        pane("pane-b", 100, 0, 100, 40),
+    ]))
+    .with_replies(
+        "layout.export",
+        [
+            export_reply(split("right", leaf("pane-a"), leaf("pane-b"))),
+            export_reply(split("right", leaf("pane-a"), leaf("pane-b"))),
+        ],
+    )
+    .with_replies("pane.split", [split_reply("pane-new")]);
+
+    let run = run_new_pane(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "created pane-new but it is missing from tab-new; left the sizes alone\n"
+    );
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            split_call("pane-a", "right"),
+            export_call(),
+        ]
+    );
+}
+
+#[test]
+fn new_pane_reports_a_created_pane_that_could_not_be_evened_out() {
+    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 40),
+        pane("pane-b", 100, 0, 100, 40),
+    ]))
+    .with_replies(
+        "layout.export",
+        [
+            export_reply(split("right", leaf("pane-a"), leaf("pane-b"))),
+            export_reply(split(
+                "right",
+                split("right", leaf("pane-a"), leaf("pane-new")),
+                leaf("pane-b"),
+            )),
+        ],
+    )
+    .with_replies("pane.split", [split_reply("pane-new")])
+    .with_replies(
+        "layout.set_split_ratio",
+        [Err("path is out of date".to_owned())],
+    );
+
+    let run = run_new_pane(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "created pane-new but could not even out the sizes: \
+         layout.set_split_ratio failed: path is out of date\n"
+    );
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            split_call("pane-a", "right"),
+            export_call(),
+            ratio_call(&[], 2.0 / 3.0),
+        ]
+    );
+}
+
+#[test]
+fn new_pane_evens_out_a_run_that_leans_on_its_second_side() {
+    // Splitting the last pane of a row grows the run down the second branch, so the
+    // shares run 1:3, then 1:2, then 1:1 from the root down.
+    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+        pane("pane-a", 0, 0, 34, 100),
+        pane("pane-b", 34, 0, 33, 100),
+        pane("pane-c", 67, 0, 33, 100),
+    ]))
+    .with_replies(
+        "layout.export",
+        [
+            export_reply(split(
+                "right",
+                leaf("pane-a"),
+                split("right", leaf("pane-b"), leaf("pane-c")),
+            )),
+            export_reply(split(
+                "right",
+                leaf("pane-a"),
+                split(
+                    "right",
+                    leaf("pane-b"),
+                    split("right", leaf("pane-c"), leaf("pane-new")),
+                ),
+            )),
+        ],
+    )
+    .with_replies("pane.split", [split_reply("pane-new")]);
+
+    let run = run_new_pane(&herdr, "pane-c");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            split_call("pane-c", "right"),
+            export_call(),
+            ratio_call(&[], 0.25),
+            ratio_call(&[true], 1.0 / 3.0),
+            ratio_call(&[true, true], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn new_pane_reports_a_created_pane_it_could_not_read_back() {
+    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 40),
+        pane("pane-b", 100, 0, 100, 40),
+    ]))
+    .with_replies(
+        "layout.export",
+        [
+            export_reply(split("right", leaf("pane-a"), leaf("pane-b"))),
+            Err("tab is gone".to_owned()),
+        ],
+    )
+    .with_replies("pane.split", [split_reply("pane-new")]);
+
+    let run = run_new_pane(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "created pane-new but could not read tab-new back: layout.export failed: tab is gone\n"
+    );
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            split_call("pane-a", "right"),
+            export_call(),
+        ]
+    );
+}
+
+#[test]
+fn new_pane_stops_evening_out_at_the_first_rejected_ratio() {
+    let herdr = FakeHerdr::new(new_pane_snapshot(vec![
+        pane("pane-a", 0, 0, 50, 100),
+        pane("pane-b", 50, 0, 25, 100),
+        pane("pane-c", 75, 0, 25, 100),
+    ]))
+    .with_replies(
+        "layout.export",
+        [
+            export_reply(split(
+                "right",
+                split("right", leaf("pane-a"), leaf("pane-b")),
+                leaf("pane-c"),
+            )),
+            export_reply(split(
+                "right",
+                split(
+                    "right",
+                    split("right", leaf("pane-a"), leaf("pane-new")),
+                    leaf("pane-b"),
+                ),
+                leaf("pane-c"),
+            )),
+        ],
+    )
+    .with_replies("pane.split", [split_reply("pane-new")])
+    .with_replies(
+        "layout.set_split_ratio",
+        [ratio_reply(), Err("path is out of date".to_owned())],
+    );
+
+    let run = run_new_pane(&herdr, "pane-a");
+
+    assert_eq!(
+        run.assert_failure(),
+        "created pane-new but could not even out the sizes: \
+         layout.set_split_ratio failed: path is out of date\n"
+    );
+    // The third ratio of the run is never attempted.
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            split_call("pane-a", "right"),
+            export_call(),
+            ratio_call(&[], 0.75),
+            ratio_call(&[false], 2.0 / 3.0),
+        ]
+    );
+}
+
 /// A fake herdr socket server. It speaks the real protocol -- one connection per
 /// request, one JSON line in and one out -- and records every request in order.
 struct FakeHerdr {
@@ -448,16 +926,18 @@ fn next_reply(replies: &mut HashMap<String, VecDeque<Reply>>, method: &str) -> O
     }
 }
 
-/// Absorbs the three requests every scenario answers the same way, shaped like the
-/// live herdr 0.8 responses -- `pane.move` reports its outcome under `move_result`,
-/// where `changed`, `reason` and `created_tab` live. Any other method must be
-/// scripted with [`FakeHerdr::with_replies`]; an unscripted one fails loudly
-/// instead of succeeding on an invented response.
+/// Absorbs the requests every scenario answers the same way, shaped like the live
+/// herdr 0.8 responses -- `pane.move` reports its outcome under `move_result`, where
+/// `changed`, `reason` and `created_tab` live, and `layout.set_split_ratio` echoes a
+/// layout the plugin never reads, so only its acknowledgement is modelled. Any other
+/// method must be scripted with [`FakeHerdr::with_replies`]; an unscripted one fails
+/// loudly instead of succeeding on an invented response.
 fn default_reply(call: &Call, snapshot: &Value) -> Reply {
     Ok(match call.method.as_str() {
         "session.snapshot" => json!({"type": "session_snapshot", "snapshot": snapshot}),
         "pane.focus" => json!({"pane": {"pane_id": call.params["pane_id"]}}),
         "pane.move" => json!({"type": "pane_move", "move_result": {"changed": true}}),
+        "layout.set_split_ratio" => json!({"type": "layout_split_ratio_set"}),
         method => panic!("unscripted socket method: {method}"),
     })
 }
@@ -521,6 +1001,89 @@ fn pane_layout(tab_id: &str, prefix: &str) -> Value {
             pane(&format!("{prefix}-top-right"), 50, 0, 50, 40),
             pane(&format!("{prefix}-top-left"), 0, 0, 50, 80),
         ],
+    )
+}
+
+/// Every `new-pane` scenario runs the same command against the same tab, so only
+/// the tree and the focused pane change between them.
+fn run_new_pane(herdr: &FakeHerdr, pane_id: &str) -> Run {
+    herdr.run("workspace-1", "tab-new", pane_id, &["new-pane"])
+}
+
+/// A tab holding exactly the given panes, which every `new-pane` scenario builds on.
+fn new_pane_snapshot(panes: Vec<Value>) -> Value {
+    snapshot(
+        json!([layout("tab-new", panes)]),
+        json!([tab("workspace-1", "tab-new", 1)]),
+        json!([workspace("workspace-1", "tab-new", 1)]),
+    )
+}
+
+fn export_reply(root: Value) -> Reply {
+    layout_export_reply(root, false)
+}
+
+fn zoomed_export_reply(root: Value) -> Reply {
+    layout_export_reply(root, true)
+}
+
+fn layout_export_reply(root: Value, zoomed: bool) -> Reply {
+    Ok(json!({
+        "type": "layout_export",
+        "layout": {
+            "workspace_id": "workspace-1",
+            "tab_id": "tab-new",
+            "zoomed": zoomed,
+            "focused_pane_id": "pane-a",
+            "root": root,
+        },
+    }))
+}
+
+fn split_reply(pane_id: &str) -> Reply {
+    Ok(json!({"type": "pane_info", "pane": {"pane_id": pane_id}}))
+}
+
+fn ratio_reply() -> Reply {
+    Ok(json!({"type": "layout_split_ratio_set"}))
+}
+
+/// The ratio a fake tree carries is irrelevant: `new-pane` recomputes every ratio
+/// it touches from the shape of the tree.
+fn split(direction: &str, first: Value, second: Value) -> Value {
+    json!({
+        "type": "split",
+        "direction": direction,
+        "ratio": 0.5,
+        "first": first,
+        "second": second,
+    })
+}
+
+fn leaf(pane_id: &str) -> Value {
+    json!({"type": "pane", "pane_id": pane_id})
+}
+
+fn export_call() -> Call {
+    call("layout.export", json!({"tab_id": "tab-new"}))
+}
+
+fn split_call(target_pane_id: &str, direction: &str) -> Call {
+    call(
+        "pane.split",
+        json!({
+            "target_pane_id": target_pane_id,
+            "direction": direction,
+            "ratio": 0.5,
+            "focus": true,
+        }),
+    )
+}
+
+fn ratio_call(path: &[bool], ratio: f64) -> Call {
+    call(
+        "layout.set_split_ratio",
+        json!({"tab_id": "tab-new", "path": path, "ratio": ratio}),
     )
 }
 

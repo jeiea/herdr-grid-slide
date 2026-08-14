@@ -33,12 +33,20 @@ enum PaneDirection {
     Down,
 }
 
+#[derive(Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum SplitDirection {
+    Right,
+    Down,
+}
+
 enum Command {
     Move {
         direction: MoveDirection,
         scope: Scope,
     },
     Focus(PaneDirection),
+    NewPane,
 }
 
 struct Context {
@@ -96,6 +104,60 @@ struct LayoutPane {
     rect: Rect,
 }
 
+#[derive(Deserialize)]
+struct LayoutExportResult {
+    layout: ExportedLayout,
+}
+
+#[derive(Deserialize)]
+struct ExportedLayout {
+    root: LayoutNode,
+    zoomed: bool,
+}
+
+/// The split tree herdr keeps for a tab. A split always has two children, so a
+/// path down the tree is a sequence of `false` (first) and `true` (second).
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", tag = "type")]
+enum LayoutNode {
+    Pane {
+        pane_id: String,
+    },
+    Split {
+        direction: SplitDirection,
+        first: Box<LayoutNode>,
+        second: Box<LayoutNode>,
+    },
+}
+
+#[derive(Deserialize)]
+struct PaneInfoResult {
+    pane: PaneRef,
+}
+
+#[derive(Deserialize)]
+struct PaneRef {
+    pane_id: String,
+}
+
+impl LayoutNode {
+    fn direction(&self) -> Option<SplitDirection> {
+        match self {
+            LayoutNode::Split { direction, .. } => Some(*direction),
+            LayoutNode::Pane { .. } => None,
+        }
+    }
+}
+
+impl SplitDirection {
+    fn as_str(self) -> &'static str {
+        match self {
+            SplitDirection::Right => "right",
+            SplitDirection::Down => "down",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Deserialize)]
 struct Rect {
     height: f64,
@@ -147,12 +209,14 @@ fn run() -> Result<()> {
     match command {
         Command::Focus(direction) => focus_with_anchor(&context, direction, &mut client),
         Command::Move { direction, scope } => move_pane(&context, direction, scope, &mut client),
+        Command::NewPane => new_pane(&context, &mut client),
     }
 }
 
 fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
     let args: Vec<_> = args.collect();
     match args.as_slice() {
+        [operation] if operation == "new-pane" => Ok(Command::NewPane),
         [operation, direction] if operation == "focus" => {
             Ok(Command::Focus(match direction.as_str() {
                 "left" => PaneDirection::Left,
@@ -180,7 +244,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
 }
 
 fn usage() -> String {
-    "usage: herdr-move-pane <workspace|tab> <next|previous> | focus <direction>".into()
+    "usage: herdr-move-pane <workspace|tab> <next|previous> | focus <direction> | new-pane".into()
 }
 
 fn read_context(require_focus: bool) -> Result<Context> {
@@ -242,11 +306,87 @@ fn focus_with_anchor(
     write_focus_anchor_state(state_dir, &next_state)
 }
 
+/// Splits the focused pane along the direction the tab already grows in, then gives
+/// every pane of that row (or column) an equal share, which herdr's own 50:50 split
+/// does not do once a row holds more than two panes.
+fn new_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
+    let snapshot = read_snapshot(client)?;
+    let navigation = navigation_context(context, &snapshot);
+    let tab_id = navigation.tab_id;
+    let snapshot_layout = find_layout(&snapshot, tab_id)?;
+    let pane = find_pane(snapshot_layout, navigation.pane_id)?;
+    let layout = read_layout(client, tab_id)?;
+    if !holds_the_same_panes(snapshot_layout, &layout.root) {
+        return Err(format!(
+            "{tab_id} changed while it was being read; try again"
+        ));
+    }
+    if layout.zoomed {
+        // Unzooming here would leave the tab zoomed out if a later step failed.
+        return Err(format!(
+            "{tab_id} is zoomed; unzoom it before adding a pane"
+        ));
+    }
+    let created = split_pane(
+        client,
+        navigation.pane_id,
+        split_direction(&layout.root, pane),
+    )?;
+    // Every failure past this point has to say the pane already exists, so that a
+    // reported failure is never mistaken for "nothing happened".
+    let layout = read_layout(client, tab_id)
+        .map_err(|error| format!("created {created} but could not read {tab_id} back: {error}"))?;
+    let descent = descent_to_pane(&layout.root, &created).ok_or_else(|| {
+        format!("created {created} but it is missing from {tab_id}; left the sizes alone")
+    })?;
+    for (path, ratio) in even_ratios(&descent) {
+        client
+            .request(
+                "layout.set_split_ratio",
+                json!({"tab_id": tab_id, "path": path, "ratio": ratio}),
+            )
+            .map_err(|error| {
+                format!("created {created} but could not even out the sizes: {error}")
+            })?;
+    }
+    Ok(())
+}
+
 fn read_snapshot(client: &mut SocketClient) -> Result<Snapshot> {
     let result = client.request("session.snapshot", json!({}))?;
     serde_json::from_value::<SnapshotResult>(result)
         .map(|response| response.snapshot)
         .map_err(|_| "herdr api snapshot returned an invalid response".into())
+}
+
+fn read_layout(client: &mut SocketClient, tab_id: &str) -> Result<ExportedLayout> {
+    let result = client.request("layout.export", json!({"tab_id": tab_id}))?;
+    serde_json::from_value::<LayoutExportResult>(result)
+        .map(|response| response.layout)
+        .map_err(|_| "herdr api layout returned an invalid response".into())
+}
+
+fn split_pane(
+    client: &mut SocketClient,
+    pane_id: &str,
+    direction: SplitDirection,
+) -> Result<String> {
+    let result = client.request(
+        "pane.split",
+        json!({
+            "target_pane_id": pane_id,
+            "direction": direction.as_str(),
+            "ratio": 0.5,
+            "focus": true,
+        }),
+    )?;
+    serde_json::from_value::<PaneInfoResult>(result)
+        .map(|response| response.pane.pane_id)
+        // herdr answered the split, so it likely went through even though the reply
+        // is unreadable and the new pane cannot be named.
+        .map_err(|_| {
+            "herdr api pane.split returned an invalid response; a pane may have been created".into()
+        })
 }
 
 fn navigation_context<'a>(context: &'a Context, snapshot: &'a Snapshot) -> NavigationContext<'a> {
@@ -564,6 +704,140 @@ fn find_pane<'a>(layout: &'a TabLayout, pane_id: &str) -> Result<&'a LayoutPane>
         .iter()
         .find(|pane| pane.pane_id == pane_id)
         .ok_or_else(|| format!("current pane not found in herdr layout: {pane_id}"))
+}
+
+/// A snapshot and a layout read one after another can straddle a concurrent change,
+/// which would make every path computed from the tree point at the wrong pane.
+fn holds_the_same_panes(layout: &TabLayout, root: &LayoutNode) -> bool {
+    let mut snapshot_ids: Vec<_> = layout
+        .panes
+        .iter()
+        .map(|pane| pane.pane_id.as_str())
+        .collect();
+    let mut layout_ids = leaf_pane_ids(root);
+    snapshot_ids.sort_unstable();
+    layout_ids.sort_unstable();
+    snapshot_ids == layout_ids
+}
+
+fn split_direction(root: &LayoutNode, pane: &LayoutPane) -> SplitDirection {
+    if let Some(direction) = uniform_direction(root) {
+        return direction;
+    }
+    // Terminal cells are roughly twice as tall as they are wide, so a pane only
+    // looks wide once its width passes twice its height.
+    if pane.rect.width > pane.rect.height * 2.0 {
+        SplitDirection::Right
+    } else {
+        SplitDirection::Down
+    }
+}
+
+/// The direction every split of the tab shares, if the tab grows only one way.
+fn uniform_direction(root: &LayoutNode) -> Option<SplitDirection> {
+    let directions = split_directions(root);
+    let first = *directions.first()?;
+    directions
+        .iter()
+        .all(|direction| *direction == first)
+        .then_some(first)
+}
+
+fn split_directions(node: &LayoutNode) -> Vec<SplitDirection> {
+    match node {
+        LayoutNode::Pane { .. } => Vec::new(),
+        LayoutNode::Split {
+            direction,
+            first,
+            second,
+        } => [*direction]
+            .into_iter()
+            .chain(split_directions(first))
+            .chain(split_directions(second))
+            .collect(),
+    }
+}
+
+/// Ratios that give every slot of the new pane's run an equal share, closest to the
+/// root first. The run is the largest group of same-direction splits joining the new
+/// pane's parent; a slot is a child that leaves the run, so a crosswise subtree
+/// counts as one slot however many panes it holds.
+fn even_ratios(descent: &[(&LayoutNode, bool)]) -> Vec<(Vec<bool>, f64)> {
+    let Some(direction) = descent.last().and_then(|(parent, _)| parent.direction()) else {
+        return Vec::new();
+    };
+    let joined = descent
+        .iter()
+        .rev()
+        .take_while(|(node, _)| node.direction() == Some(direction))
+        .count();
+    let run_root = descent.len() - joined;
+    let path = descent[..run_root].iter().map(|(_, branch)| *branch);
+    ratio_updates(descent[run_root].0, direction, path.collect())
+}
+
+fn ratio_updates(
+    node: &LayoutNode,
+    direction: SplitDirection,
+    path: Vec<bool>,
+) -> Vec<(Vec<bool>, f64)> {
+    let LayoutNode::Split {
+        direction: node_direction,
+        first,
+        second,
+    } = node
+    else {
+        return Vec::new();
+    };
+    if *node_direction != direction {
+        return Vec::new();
+    }
+    let ratio = slot_count(first, direction) as f64 / slot_count(node, direction) as f64;
+    [(path.clone(), ratio)]
+        .into_iter()
+        .chain(ratio_updates(first, direction, child_path(&path, false)))
+        .chain(ratio_updates(second, direction, child_path(&path, true)))
+        .collect()
+}
+
+fn slot_count(node: &LayoutNode, direction: SplitDirection) -> usize {
+    match node {
+        LayoutNode::Split {
+            direction: node_direction,
+            first,
+            second,
+        } if *node_direction == direction => {
+            slot_count(first, direction) + slot_count(second, direction)
+        }
+        _ => 1,
+    }
+}
+
+/// The splits passed on the way down to a pane, each with the branch taken there.
+fn descent_to_pane<'a>(node: &'a LayoutNode, pane_id: &str) -> Option<Vec<(&'a LayoutNode, bool)>> {
+    match node {
+        LayoutNode::Pane { pane_id: found } => (found == pane_id).then(Vec::new),
+        LayoutNode::Split { first, second, .. } => [(first, false), (second, true)]
+            .into_iter()
+            .find_map(|(child, branch)| {
+                let descent = descent_to_pane(child, pane_id)?;
+                Some(std::iter::once((node, branch)).chain(descent).collect())
+            }),
+    }
+}
+
+fn leaf_pane_ids(node: &LayoutNode) -> Vec<&str> {
+    match node {
+        LayoutNode::Pane { pane_id } => vec![pane_id.as_str()],
+        LayoutNode::Split { first, second, .. } => leaf_pane_ids(first)
+            .into_iter()
+            .chain(leaf_pane_ids(second))
+            .collect(),
+    }
+}
+
+fn child_path(path: &[bool], branch: bool) -> Vec<bool> {
+    path.iter().copied().chain([branch]).collect()
 }
 
 fn workspace_id_for_tab<'a>(snapshot: &'a Snapshot, tab_id: &str) -> Result<&'a str> {
