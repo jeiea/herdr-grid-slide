@@ -1,21 +1,26 @@
 #![cfg(unix)]
 
+use std::collections::{HashMap, VecDeque};
 use std::fs;
 use std::io::{BufRead, BufReader, ErrorKind, Write};
-use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{Value, json};
 
+/// One scripted socket reply. `Err` is serialized as herdr's `error.message`.
+type Reply = Result<Value, String>;
+
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 fn moves_wrap_by_visible_workspace_and_tab_number() {
-    let integration = standard_integration();
+    let herdr = FakeHerdr::new(standard_snapshot());
 
     for (scope, direction, workspace_id, tab_id, target_tab_id) in [
         ("workspace", "next", "workspace-3", "tab-3-1", "tab-1-1"),
@@ -23,17 +28,14 @@ fn moves_wrap_by_visible_workspace_and_tab_number() {
         ("tab", "next", "workspace-2", "tab-2-3", "tab-2-1"),
         ("tab", "previous", "workspace-2", "tab-2-1", "tab-2-3"),
     ] {
-        let output = integration.run(workspace_id, tab_id, "pane-current", &[scope, direction]);
-        assert_success(&output);
+        let run = herdr.run(workspace_id, tab_id, "pane-current", &[scope, direction]);
+
+        run.assert_success();
         assert_eq!(
-            integration.call(),
+            run.requests,
             [
-                "pane.move",
-                "pane-current",
-                target_tab_id,
-                "right",
-                "0.5",
-                "true"
+                call("session.snapshot", json!({})),
+                call("pane.move", move_to_tab("pane-current", target_tab_id)),
             ]
         );
     }
@@ -47,7 +49,7 @@ fn focuses_each_geometric_neighbor_inside_a_tab() {
         ("up", "pane-up", (40, 0)),
         ("down", "pane-down", (40, 80)),
     ] {
-        let integration = Integration::new(
+        let herdr = FakeHerdr::new(snapshot(
             json!([layout(
                 "tab-current",
                 vec![
@@ -57,16 +59,17 @@ fn focuses_each_geometric_neighbor_inside_a_tab() {
             )]),
             json!([tab("workspace-1", "tab-current", 1)]),
             json!([workspace("workspace-1", "tab-current", 1)]),
-        );
+        ));
 
-        let output = integration.run(
+        let run = herdr.run(
             "workspace-1",
             "tab-current",
             "pane-current",
             &["focus", direction],
         );
-        assert_success(&output);
-        assert_eq!(integration.call(), ["pane.focus", target_id]);
+
+        run.assert_success();
+        assert_eq!(run.requests, [snapshot_call(), focus_call(target_id)]);
     }
 }
 
@@ -86,17 +89,18 @@ fn focus_wraps_across_tabs_and_workspaces_in_visual_order() {
             .find(|layout| layout["tab_id"] == tab_id)
             .unwrap();
         *current = layout(tab_id, vec![pane("pane-current", 0, 0, 100, 80)]);
-        let integration = Integration::new(layouts, standard_tabs(), standard_workspaces());
+        let herdr = FakeHerdr::new(snapshot(layouts, standard_tabs(), standard_workspaces()));
 
-        let output = integration.run(workspace_id, tab_id, "pane-current", &["focus", direction]);
-        assert_success(&output);
-        assert_eq!(integration.call(), ["pane.focus", expected]);
+        let run = herdr.run(workspace_id, tab_id, "pane-current", &["focus", direction]);
+
+        run.assert_success();
+        assert_eq!(run.requests, [snapshot_call(), focus_call(expected)]);
     }
 }
 
 #[test]
 fn focus_remembers_the_cross_axis_anchor_across_panes() {
-    let integration = anchor_integration();
+    let herdr = anchor_herdr();
 
     for (pane_id, direction, expected) in [
         ("pane-a", "right", "pane-b"),
@@ -104,12 +108,13 @@ fn focus_remembers_the_cross_axis_anchor_across_panes() {
         ("pane-c", "left", "pane-a"),
         ("pane-a", "right", "pane-c"),
     ] {
-        let output = integration.run("workspace-1", "tab-anchor", pane_id, &["focus", direction]);
-        assert_success(&output);
-        assert_eq!(integration.call(), ["pane.focus", expected]);
+        let run = herdr.run("workspace-1", "tab-anchor", pane_id, &["focus", direction]);
+
+        run.assert_success();
+        assert_eq!(run.requests, [snapshot_call(), focus_call(expected)]);
     }
 
-    let state_files: Vec<_> = fs::read_dir(&integration.state_path)
+    let state_files: Vec<_> = fs::read_dir(&herdr.state_path)
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
         .collect();
@@ -118,36 +123,47 @@ fn focus_remembers_the_cross_axis_anchor_across_panes() {
 
 #[test]
 fn focus_uses_live_snapshot_context_instead_of_stale_environment() {
-    let integration =
-        anchor_integration().with_focused_context("workspace-1", "tab-anchor", "pane-b");
+    let herdr = FakeHerdr::new(focused(
+        anchor_snapshot(),
+        "workspace-1",
+        "tab-anchor",
+        "pane-b",
+    ));
 
-    let output = integration.run(
+    let run = herdr.run(
         "workspace-stale",
         "tab-stale",
         "pane-stale",
         &["focus", "down"],
     );
 
-    assert_success(&output);
-    assert_eq!(integration.call(), ["pane.focus", "pane-c"]);
+    run.assert_success();
+    assert_eq!(run.requests, [snapshot_call(), focus_call("pane-c")]);
 }
 
 #[test]
 fn move_uses_live_snapshot_context_instead_of_stale_environment() {
-    let integration =
-        standard_integration().with_focused_context("workspace-2", "tab-2-1", "pane-live");
+    let herdr = FakeHerdr::new(focused(
+        standard_snapshot(),
+        "workspace-2",
+        "tab-2-1",
+        "pane-live",
+    ));
 
-    let output = integration.run(
+    let run = herdr.run(
         "workspace-stale",
         "tab-stale",
         "pane-stale",
         &["tab", "next"],
     );
 
-    assert_success(&output);
+    run.assert_success();
     assert_eq!(
-        integration.call(),
-        ["pane.move", "pane-live", "tab-2-2", "right", "0.5", "true"]
+        run.requests,
+        [
+            snapshot_call(),
+            call("pane.move", move_to_tab("pane-live", "tab-2-2")),
+        ]
     );
 }
 
@@ -164,18 +180,19 @@ fn focus_resets_stale_or_malformed_anchor_state() {
         .to_string(),
         "not json".to_owned(),
     ] {
-        let integration = anchor_integration();
-        integration.write_state(&state);
+        let herdr = anchor_herdr();
+        herdr.write_state(&state);
 
-        let output = integration.run("workspace-1", "tab-anchor", "pane-a", &["focus", "right"]);
-        assert_success(&output);
-        assert_eq!(integration.call(), ["pane.focus", "pane-b"]);
+        let run = herdr.run("workspace-1", "tab-anchor", "pane-a", &["focus", "right"]);
+
+        run.assert_success();
+        assert_eq!(run.requests, [snapshot_call(), focus_call("pane-b")]);
     }
 }
 
 #[test]
 fn focus_preserves_anchor_while_wrapping_across_tabs() {
-    let integration = Integration::new(
+    let herdr = FakeHerdr::new(snapshot(
         json!([
             layout("tab-source", vec![pane("pane-source", 0, 0, 100, 200)]),
             layout(
@@ -191,8 +208,8 @@ fn focus_preserves_anchor_while_wrapping_across_tabs() {
             tab("workspace-1", "tab-target", 2),
         ]),
         json!([workspace("workspace-1", "tab-source", 1)]),
-    );
-    integration.write_state(
+    ));
+    herdr.write_state(
         &json!({
             "paneId": "pane-source",
             "tabId": "tab-source",
@@ -203,19 +220,20 @@ fn focus_preserves_anchor_while_wrapping_across_tabs() {
         .to_string(),
     );
 
-    let output = integration.run(
+    let run = herdr.run(
         "workspace-1",
         "tab-source",
         "pane-source",
         &["focus", "right"],
     );
-    assert_success(&output);
-    assert_eq!(integration.call(), ["pane.focus", "pane-bottom"]);
+
+    run.assert_success();
+    assert_eq!(run.requests, [snapshot_call(), focus_call("pane-bottom")]);
 }
 
 #[test]
 fn focus_preserves_anchor_while_wrapping_across_workspaces() {
-    let integration = Integration::new(
+    let herdr = FakeHerdr::new(snapshot(
         json!([
             layout("tab-source", vec![pane("pane-source", 0, 0, 200, 100)]),
             layout(
@@ -234,8 +252,8 @@ fn focus_preserves_anchor_while_wrapping_across_workspaces() {
             workspace("workspace-source", "tab-source", 1),
             workspace("workspace-target", "tab-target", 2),
         ]),
-    );
-    integration.write_state(
+    ));
+    herdr.write_state(
         &json!({
             "paneId": "pane-source",
             "tabId": "tab-source",
@@ -246,64 +264,86 @@ fn focus_preserves_anchor_while_wrapping_across_workspaces() {
         .to_string(),
     );
 
-    let output = integration.run(
+    let run = herdr.run(
         "workspace-source",
         "tab-source",
         "pane-source",
         &["focus", "down"],
     );
-    assert_success(&output);
-    assert_eq!(integration.call(), ["pane.focus", "pane-right"]);
+
+    run.assert_success();
+    assert_eq!(run.requests, [snapshot_call(), focus_call("pane-right")]);
 }
 
-struct Integration {
-    calls_path: PathBuf,
+#[test]
+fn reports_the_herdr_error_that_rejected_an_action() {
+    let herdr = FakeHerdr::new(standard_snapshot())
+        .with_replies("pane.move", [Err("target tab is gone".to_owned())]);
+
+    let run = herdr.run("workspace-2", "tab-2-1", "pane-current", &["tab", "next"]);
+
+    assert_eq!(
+        run.assert_failure(),
+        "pane.move failed: target tab is gone\n"
+    );
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            call("pane.move", move_to_tab("pane-current", "tab-2-2")),
+        ]
+    );
+}
+
+/// A fake herdr socket server. It speaks the real protocol -- one connection per
+/// request, one JSON line in and one out -- and records every request in order.
+struct FakeHerdr {
     directory: PathBuf,
-    layouts: Value,
+    replies: HashMap<String, VecDeque<Reply>>,
+    snapshot: Value,
     state_path: PathBuf,
-    tabs: Value,
-    workspaces: Value,
-    focused_context: Option<(String, String, String)>,
 }
 
-impl Integration {
-    fn new(layouts: Value, tabs: Value, workspaces: Value) -> Self {
+/// One plugin execution: how the process ended and what it asked herdr for.
+struct Run {
+    output: Output,
+    requests: Vec<Call>,
+}
+
+/// One recorded socket request.
+#[derive(Clone, Debug, PartialEq)]
+struct Call {
+    method: String,
+    params: Value,
+}
+
+impl FakeHerdr {
+    fn new(snapshot: Value) -> Self {
         let directory = temp_dir();
         fs::create_dir_all(&directory).unwrap();
         Self {
-            calls_path: directory.join("calls.txt"),
+            replies: HashMap::new(),
+            snapshot,
             state_path: directory.join("state"),
             directory,
-            layouts,
-            tabs,
-            workspaces,
-            focused_context: None,
         }
     }
 
-    fn with_focused_context(mut self, workspace_id: &str, tab_id: &str, pane_id: &str) -> Self {
-        self.focused_context = Some((
-            workspace_id.to_owned(),
-            tab_id.to_owned(),
-            pane_id.to_owned(),
-        ));
+    /// Answers successive calls to `method` with these replies in order, repeating
+    /// the last one once the queue runs dry, so a scenario only lists the replies
+    /// that differ. Every [`FakeHerdr::run`] starts over from this initial queue,
+    /// which keeps repeated runs on one fake independent. Methods left unscripted
+    /// fall back to [`default_reply`].
+    fn with_replies(mut self, method: &str, replies: impl IntoIterator<Item = Reply>) -> Self {
+        self.replies
+            .insert(method.to_owned(), replies.into_iter().collect());
         self
     }
 
-    fn run(&self, workspace_id: &str, tab_id: &str, pane_id: &str, args: &[&str]) -> Output {
-        let _ = fs::remove_file(&self.calls_path);
+    fn run(&self, workspace_id: &str, tab_id: &str, pane_id: &str, args: &[&str]) -> Run {
         let socket_path = self.directory.join("herdr.sock");
-        let mut snapshot = json!({
-            "layouts": self.layouts,
-            "tabs": self.tabs,
-            "workspaces": self.workspaces,
-        });
-        if let Some((workspace_id, tab_id, pane_id)) = &self.focused_context {
-            snapshot["focused_workspace_id"] = workspace_id.clone().into();
-            snapshot["focused_tab_id"] = tab_id.clone().into();
-            snapshot["focused_pane_id"] = pane_id.clone().into();
-        }
-        let server = self.start_server(&socket_path, snapshot);
+        let stop = Arc::new(AtomicBool::new(false));
+        let server = self.serve(&socket_path, Arc::clone(&stop));
         let output = Command::new(env!("CARGO_BIN_EXE_herdr-move-pane"))
             .args(args)
             .env("HERDR_PANE_ID", pane_id)
@@ -313,75 +353,36 @@ impl Integration {
             .env("HERDR_WORKSPACE_ID", workspace_id)
             .output()
             .unwrap();
-        server.join().unwrap();
-        output
+        stop.store(true, Ordering::Relaxed);
+        let requests = server.join().unwrap();
+        Run { output, requests }
     }
 
-    fn start_server(&self, socket_path: &PathBuf, snapshot: Value) -> thread::JoinHandle<()> {
+    /// Serves requests until `stop` is set, then hands back everything it saw.
+    fn serve(&self, socket_path: &Path, stop: Arc<AtomicBool>) -> thread::JoinHandle<Vec<Call>> {
         let _ = fs::remove_file(socket_path);
         let listener = UnixListener::bind(socket_path).unwrap();
         listener.set_nonblocking(true).unwrap();
-        let calls_path = self.calls_path.clone();
+        let mut replies = self.replies.clone();
+        let snapshot = self.snapshot.clone();
         thread::spawn(move || {
-            for request_number in 0..2 {
-                let Some((connection, _)) = (0..200).find_map(|_| match listener.accept() {
-                    Ok(connection) => Some(connection),
+            let mut requests = Vec::new();
+            loop {
+                match listener.accept() {
+                    Ok((connection, _)) => {
+                        connection.set_nonblocking(false).unwrap();
+                        requests.push(serve_request(connection, &mut replies, &snapshot));
+                    }
                     Err(error) if error.kind() == ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(10));
-                        None
+                        if stop.load(Ordering::Relaxed) {
+                            return requests;
+                        }
+                        thread::sleep(Duration::from_millis(1));
                     }
                     Err(error) => panic!("accept failed: {error}"),
-                }) else {
-                    return;
-                };
-                connection.set_nonblocking(false).unwrap();
-                let mut reader = BufReader::new(connection.try_clone().unwrap());
-                let mut writer = connection;
-                let mut request = String::new();
-                reader.read_line(&mut request).unwrap();
-                let request: Value = serde_json::from_str(&request).unwrap();
-                let result = match request["method"].as_str().unwrap() {
-                    "session.snapshot" => {
-                        json!({"type": "session_snapshot", "snapshot": snapshot})
-                    }
-                    "pane.focus" => {
-                        let pane_id = request["params"]["pane_id"].as_str().unwrap();
-                        fs::write(&calls_path, format!("pane.focus\n{pane_id}\n")).unwrap();
-                        json!({"pane": {"pane_id": pane_id}})
-                    }
-                    "pane.move" => {
-                        let params = &request["params"];
-                        let destination = &params["destination"];
-                        fs::write(
-                            &calls_path,
-                            format!(
-                                "pane.move\n{}\n{}\n{}\n{}\n{}\n",
-                                params["pane_id"].as_str().unwrap(),
-                                destination["tab_id"].as_str().unwrap(),
-                                destination["split"].as_str().unwrap(),
-                                destination["ratio"],
-                                params["focus"],
-                            ),
-                        )
-                        .unwrap();
-                        json!({"type": "pane_move"})
-                    }
-                    method => panic!("unexpected socket method: {method}"),
-                };
-                if request_number == 0 {
-                    assert_eq!(request["method"], "session.snapshot");
                 }
-                writeln!(writer, "{}", json!({"id": request["id"], "result": result})).unwrap();
             }
         })
-    }
-
-    fn call(&self) -> Vec<String> {
-        fs::read_to_string(&self.calls_path)
-            .unwrap()
-            .lines()
-            .map(str::to_owned)
-            .collect()
     }
 
     fn write_state(&self, state: &str) {
@@ -390,14 +391,83 @@ impl Integration {
     }
 }
 
-impl Drop for Integration {
+impl Drop for FakeHerdr {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.directory);
     }
 }
 
-fn anchor_integration() -> Integration {
-    Integration::new(
+impl Run {
+    fn assert_success(&self) {
+        assert!(self.output.status.success(), "stderr: {}", self.stderr());
+    }
+
+    fn assert_failure(&self) -> String {
+        assert!(!self.output.status.success(), "stdout: {}", self.stdout());
+        self.stderr()
+    }
+
+    fn stdout(&self) -> String {
+        String::from_utf8_lossy(&self.output.stdout).into_owned()
+    }
+
+    fn stderr(&self) -> String {
+        String::from_utf8_lossy(&self.output.stderr).into_owned()
+    }
+}
+
+fn serve_request(
+    connection: UnixStream,
+    replies: &mut HashMap<String, VecDeque<Reply>>,
+    snapshot: &Value,
+) -> Call {
+    let mut reader = BufReader::new(connection.try_clone().unwrap());
+    let mut writer = connection;
+    let mut line = String::new();
+    reader.read_line(&mut line).unwrap();
+    let request: Value = serde_json::from_str(&line).unwrap();
+    let call = call(
+        request["method"].as_str().unwrap(),
+        request["params"].clone(),
+    );
+    let reply = next_reply(replies, &call.method).unwrap_or_else(|| default_reply(&call, snapshot));
+    let response = match reply {
+        Ok(result) => json!({"id": request["id"], "result": result}),
+        Err(message) => json!({"id": request["id"], "error": {"message": message}}),
+    };
+    writeln!(writer, "{response}").unwrap();
+    call
+}
+
+fn next_reply(replies: &mut HashMap<String, VecDeque<Reply>>, method: &str) -> Option<Reply> {
+    let queue = replies.get_mut(method)?;
+    if queue.len() > 1 {
+        queue.pop_front()
+    } else {
+        queue.front().cloned()
+    }
+}
+
+/// Absorbs the three requests every scenario answers the same way, shaped like the
+/// live herdr 0.8 responses -- `pane.move` reports its outcome under `move_result`,
+/// where `changed`, `reason` and `created_tab` live. Any other method must be
+/// scripted with [`FakeHerdr::with_replies`]; an unscripted one fails loudly
+/// instead of succeeding on an invented response.
+fn default_reply(call: &Call, snapshot: &Value) -> Reply {
+    Ok(match call.method.as_str() {
+        "session.snapshot" => json!({"type": "session_snapshot", "snapshot": snapshot}),
+        "pane.focus" => json!({"pane": {"pane_id": call.params["pane_id"]}}),
+        "pane.move" => json!({"type": "pane_move", "move_result": {"changed": true}}),
+        method => panic!("unscripted socket method: {method}"),
+    })
+}
+
+fn anchor_herdr() -> FakeHerdr {
+    FakeHerdr::new(anchor_snapshot())
+}
+
+fn anchor_snapshot() -> Value {
+    snapshot(
         json!([layout(
             "tab-anchor",
             vec![
@@ -411,8 +481,8 @@ fn anchor_integration() -> Integration {
     )
 }
 
-fn standard_integration() -> Integration {
-    Integration::new(standard_layouts(), standard_tabs(), standard_workspaces())
+fn standard_snapshot() -> Value {
+    snapshot(standard_layouts(), standard_tabs(), standard_workspaces())
 }
 
 fn standard_tabs() -> Value {
@@ -454,6 +524,19 @@ fn pane_layout(tab_id: &str, prefix: &str) -> Value {
     )
 }
 
+fn snapshot(layouts: Value, tabs: Value, workspaces: Value) -> Value {
+    json!({"layouts": layouts, "tabs": tabs, "workspaces": workspaces})
+}
+
+/// A snapshot where herdr reports live focus, which the plugin trusts over the
+/// environment variables it was launched with.
+fn focused(mut snapshot: Value, workspace_id: &str, tab_id: &str, pane_id: &str) -> Value {
+    snapshot["focused_workspace_id"] = workspace_id.into();
+    snapshot["focused_tab_id"] = tab_id.into();
+    snapshot["focused_pane_id"] = pane_id.into();
+    snapshot
+}
+
 fn layout(tab_id: &str, panes: Vec<Value>) -> Value {
     json!({"panes": panes, "tab_id": tab_id})
 }
@@ -470,12 +553,27 @@ fn workspace(workspace_id: &str, active_tab_id: &str, number: u16) -> Value {
     json!({"workspace_id": workspace_id, "active_tab_id": active_tab_id, "number": number})
 }
 
-fn assert_success(output: &Output) {
-    assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+fn snapshot_call() -> Call {
+    call("session.snapshot", json!({}))
+}
+
+fn focus_call(pane_id: &str) -> Call {
+    call("pane.focus", json!({"pane_id": pane_id}))
+}
+
+fn move_to_tab(pane_id: &str, tab_id: &str) -> Value {
+    json!({
+        "pane_id": pane_id,
+        "destination": {"type": "tab", "tab_id": tab_id, "split": "right", "ratio": 0.5},
+        "focus": true,
+    })
+}
+
+fn call(method: &str, params: Value) -> Call {
+    Call {
+        method: method.to_owned(),
+        params,
+    }
 }
 
 fn temp_dir() -> PathBuf {
