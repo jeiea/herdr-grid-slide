@@ -63,6 +63,12 @@ contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "split-pane"]
 
 [[actions]]
+id = "new-pane"
+title = "Create pane and balance the tab"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "new-pane"]
+
+[[actions]]
 id = "balance"
 title = "Balance panes into even grid"
 contexts = ["pane"]

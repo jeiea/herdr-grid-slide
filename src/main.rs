@@ -47,6 +47,7 @@ enum Command {
     },
     Focus(PaneDirection),
     SplitPane,
+    NewPane,
     Balance,
 }
 
@@ -62,6 +63,13 @@ struct NavigationContext<'a> {
     pane_id: &'a str,
     tab_id: &'a str,
     workspace_id: &'a str,
+}
+
+struct PaneSplit {
+    direction: SplitDirection,
+    pane_id: String,
+    tab_id: String,
+    workspace_id: String,
 }
 
 #[derive(Deserialize)]
@@ -288,6 +296,7 @@ fn run() -> Result<()> {
         Command::Focus(direction) => focus_with_anchor(&context, direction, &mut client),
         Command::Move { direction, scope } => move_pane(&context, direction, scope, &mut client),
         Command::SplitPane => split_pane(&context, &mut client),
+        Command::NewPane => new_pane(&context, &mut client),
         Command::Balance => balance(&context, &mut client),
     }
 }
@@ -297,6 +306,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
     match args.as_slice() {
         [operation] => match operation.as_str() {
             "split-pane" => Ok(Command::SplitPane),
+            "new-pane" => Ok(Command::NewPane),
             "balance" => Ok(Command::Balance),
             _ => Err(usage()),
         },
@@ -327,8 +337,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
 }
 
 fn usage() -> String {
-    "usage: herdr-move-pane <workspace|tab> <next|previous> | focus <direction> | split-pane | balance"
-        .into()
+    "usage: herdr-move-pane <workspace|tab> <next|previous> | focus <direction> | split-pane | new-pane | balance".into()
 }
 
 fn read_context(require_focus: bool) -> Result<Context> {
@@ -394,6 +403,50 @@ fn focus_with_anchor(
 /// every pane of that row (or column) an equal share, which herdr's own 50:50 split
 /// does not do once a row holds more than two panes.
 fn split_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
+    let split = prepare_pane_split(context, client)?;
+    let created = request_pane_split(client, &split.pane_id, split.direction)?;
+    // Every failure past this point has to say the pane already exists, so that a
+    // reported failure is never mistaken for "nothing happened".
+    let layout = read_layout(client, &split.tab_id).map_err(|error| {
+        format!(
+            "created {created} but could not read {} back: {error}",
+            split.tab_id
+        )
+    })?;
+    let descent = descent_to_pane(&layout.root, &created).ok_or_else(|| {
+        format!(
+            "created {created} but it is missing from {}; left the sizes alone",
+            split.tab_id
+        )
+    })?;
+    for (path, ratio) in even_ratios(&descent) {
+        client
+            .request(
+                "layout.set_split_ratio",
+                json!({"tab_id": split.tab_id, "path": path, "ratio": ratio}),
+            )
+            .map_err(|error| {
+                format!("created {created} but could not even out the sizes: {error}")
+            })?;
+    }
+    Ok(())
+}
+
+/// Splits the focused pane with the same adaptive direction as `split-pane`, then
+/// balances the whole tab while keeping focus on the pane the split created.
+fn new_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
+    let split = prepare_pane_split(context, client)?;
+    let created = request_pane_split(client, &split.pane_id, split.direction)?;
+    balance_created_pane(client, &split, &created).map_err(|error| {
+        format!(
+            "created {created} but could not balance {}: {error}",
+            split.tab_id
+        )
+    })
+}
+
+/// Reads and validates everything needed before a pane split can have side effects.
+fn prepare_pane_split(context: &Context, client: &mut SocketClient) -> Result<PaneSplit> {
     let snapshot = read_snapshot(client)?;
     let navigation = navigation_context(context, &snapshot);
     let tab_id = navigation.tab_id;
@@ -411,29 +464,12 @@ fn split_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
             "{tab_id} is zoomed; unzoom it before adding a pane"
         ));
     }
-    let created = request_pane_split(
-        client,
-        navigation.pane_id,
-        split_direction(&layout.root, pane),
-    )?;
-    // Every failure past this point has to say the pane already exists, so that a
-    // reported failure is never mistaken for "nothing happened".
-    let layout = read_layout(client, tab_id)
-        .map_err(|error| format!("created {created} but could not read {tab_id} back: {error}"))?;
-    let descent = descent_to_pane(&layout.root, &created).ok_or_else(|| {
-        format!("created {created} but it is missing from {tab_id}; left the sizes alone")
-    })?;
-    for (path, ratio) in even_ratios(&descent) {
-        client
-            .request(
-                "layout.set_split_ratio",
-                json!({"tab_id": tab_id, "path": path, "ratio": ratio}),
-            )
-            .map_err(|error| {
-                format!("created {created} but could not even out the sizes: {error}")
-            })?;
-    }
-    Ok(())
+    Ok(PaneSplit {
+        direction: split_direction(&layout.root, pane),
+        pane_id: navigation.pane_id.to_owned(),
+        tab_id: tab_id.to_owned(),
+        workspace_id: navigation.workspace_id.to_owned(),
+    })
 }
 
 /// Spreads the panes of a tab over an even grid, in reading order. A tab that is
@@ -443,8 +479,36 @@ fn split_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
 fn balance(context: &Context, client: &mut SocketClient) -> Result<()> {
     let snapshot = read_snapshot(client)?;
     let navigation = navigation_context(context, &snapshot);
-    let tab_id = navigation.tab_id;
-    let snapshot_layout = find_layout(&snapshot, tab_id)?;
+    let snapshot_layout = find_layout(&snapshot, navigation.tab_id)?;
+    balance_layout(
+        client,
+        snapshot_layout,
+        navigation.tab_id,
+        navigation.workspace_id,
+        navigation.pane_id,
+    )
+}
+
+fn balance_created_pane(client: &mut SocketClient, split: &PaneSplit, pane_id: &str) -> Result<()> {
+    let snapshot = read_snapshot(client)?;
+    let snapshot_layout = find_layout(&snapshot, &split.tab_id)?;
+    find_pane(snapshot_layout, pane_id)?;
+    balance_layout(
+        client,
+        snapshot_layout,
+        &split.tab_id,
+        &split.workspace_id,
+        pane_id,
+    )
+}
+
+fn balance_layout(
+    client: &mut SocketClient,
+    snapshot_layout: &TabLayout,
+    tab_id: &str,
+    workspace_id: &str,
+    focus_pane_id: &str,
+) -> Result<()> {
     let layout = read_layout(client, tab_id)?;
     if !holds_the_same_panes(snapshot_layout, &layout.root) {
         return Err(format!(
@@ -460,11 +524,11 @@ fn balance(context: &Context, client: &mut SocketClient) -> Result<()> {
         return Ok(());
     }
     let plan = GridPlan {
-        focus_pane_id: navigation.pane_id,
+        focus_pane_id,
         row_sizes: grid_row_sizes(order.len(), layout_bounds(snapshot_layout)?)?,
         order,
         tab_id,
-        workspace_id: navigation.workspace_id,
+        workspace_id,
     };
     match read_grid(&layout.root).filter(|grid| plan.matches(grid)) {
         Some(grid) => sort_grid(client, &plan, &layout.root, &grid),

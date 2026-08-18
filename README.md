@@ -22,6 +22,10 @@ the right, anything else splits downwards, which accounts for terminal cells bei
 tall as they are wide. A subtree running the other way counts as one slot, so evening out a row
 leaves the column inside it alone.
 
+`new-pane` chooses the same adaptive split direction, creates the pane at 50:50, and then balances
+the whole tab while keeping the new pane focused. It does not even out the new pane's local row or
+column first; the whole-tab balance replaces that intermediate resize.
+
 `balance` lays the whole tab out as an even two-axis grid, keeping the panes in reading order. The
 column count is roughly `sqrt(panes × width / (2 × height))`, the same cell correction as above,
 clamped between one and the pane count, and the last row is allowed to come up short. Each run does
@@ -33,23 +37,23 @@ scratch tab disappears with the last move. Whether it finishes or fails, `balanc
 back on the pane it started from, best effort. Running `balance` again on its own result only
 reapplies the target ratios.
 
-Both actions stop with an error on a zoomed tab rather than unzooming it, so a failure part-way
-through cannot leave the tab zoomed out. Herdr clamps split ratios to [0.1, 0.9], so a run of more
-than ten same-direction slots cannot be made exactly even; rebuilt grids join panes as balanced
-halves and stay clear of the clamp. A rebuild that fails part-way tries to bring the parked panes
-back beside the first one, preferring to keep every terminal over restoring the previous
-arrangement, and names any pane it could not bring back along with the tab holding it. Rebuilding
-also moves panes through another tab, so the layout visibly churns while it runs.
+All three layout actions stop with an error on a zoomed tab rather than unzooming it, so a failure
+part-way through cannot leave the tab zoomed out. Herdr clamps split ratios to [0.1, 0.9], so a run
+of more than ten same-direction slots cannot be made exactly even; rebuilt grids join panes as
+balanced halves and stay clear of the clamp. A rebuild that fails part-way tries to bring the
+parked panes back beside the first one, preferring to keep every terminal over restoring the
+previous arrangement, and names any pane it could not bring back along with the tab holding it.
+Rebuilding also moves panes through another tab, so the layout visibly churns while it runs.
 
 The focus position is stored in `HERDR_PLUGIN_STATE_DIR/focus-anchor.json`. Focus actions do not use
 a lock file. Each successful action writes a temporary file and atomically replaces the state, which
 prevents partially written JSON but does not order overlapping processes. Either process may replace
 the anchor after the other focuses, and inputs that read the same snapshot may choose the same target.
 Each action uses the snapshot's live focused pane instead of its inherited pane context, reducing
-stale-context errors without promising exact ordering for simultaneous inputs. `split-pane` and
-`balance` take no lock either; they check the session snapshot against the exported layout before
-touching anything, and a rebuild re-reads the tab before resizing it, which catches a tab that
-changed underneath them without serialising simultaneous inputs.
+stale-context errors without promising exact ordering for simultaneous inputs. `split-pane`,
+`new-pane`, and `balance` take no lock either; they check the session snapshot against the exported
+layout before touching anything, and a rebuild re-reads the tab before resizing it, which catches a
+tab that changed underneath them without serialising simultaneous inputs.
 
 Actions use `HERDR_SOCKET_PATH` directly for both the session snapshot and the resulting pane
 operation, avoiding an additional Herdr CLI process per key press.
@@ -107,6 +111,7 @@ The plugin exposes these actions:
 - `jeiea.move-pane.focus-up`
 - `jeiea.move-pane.focus-right`
 - `jeiea.move-pane.split-pane`
+- `jeiea.move-pane.new-pane`
 - `jeiea.move-pane.balance`
 
 Release maintenance and the checks that remain after making this repository public are documented in
