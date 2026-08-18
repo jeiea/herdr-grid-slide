@@ -48,7 +48,7 @@ enum Command {
     Focus(PaneDirection),
     SplitPane,
     NewPane,
-    RemovePane,
+    OnPaneExited,
     Balance,
 }
 
@@ -68,7 +68,6 @@ struct NavigationContext<'a> {
 
 struct PaneAction {
     pane_id: String,
-    pane_count: usize,
     split_direction: SplitDirection,
     tab_id: String,
     workspace_id: String,
@@ -299,7 +298,7 @@ fn run() -> Result<()> {
         Command::Move { direction, scope } => move_pane(&context, direction, scope, &mut client),
         Command::SplitPane => split_pane(&context, &mut client),
         Command::NewPane => new_pane(&context, &mut client),
-        Command::RemovePane => remove_pane(&context, &mut client),
+        Command::OnPaneExited => balance_exited_pane(&context, &mut client),
         Command::Balance => balance(&context, &mut client),
     }
 }
@@ -310,7 +309,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
         [operation] => match operation.as_str() {
             "split-pane" => Ok(Command::SplitPane),
             "new-pane" => Ok(Command::NewPane),
-            "remove-pane" => Ok(Command::RemovePane),
+            "on-pane-exited" => Ok(Command::OnPaneExited),
             "balance" => Ok(Command::Balance),
             _ => Err(usage()),
         },
@@ -341,7 +340,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
 }
 
 fn usage() -> String {
-    "usage: herdr-move-pane <workspace|tab> <next|previous> | focus <direction> | split-pane | new-pane | remove-pane | balance".into()
+    "usage: herdr-move-pane <workspace|tab> <next|previous> | focus <direction> | split-pane | new-pane | balance | on-pane-exited".into()
 }
 
 fn read_context(require_focus: bool) -> Result<Context> {
@@ -407,7 +406,7 @@ fn focus_with_anchor(
 /// every pane of that row (or column) an equal share, which herdr's own 50:50 split
 /// does not do once a row holds more than two panes.
 fn split_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
-    let pane = prepare_pane_action(context, client, "adding a pane")?;
+    let pane = prepare_pane_action(context, client)?;
     let created = request_pane_split(client, &pane.pane_id, pane.split_direction)?;
     // Every failure past this point has to say the pane already exists, so that a
     // reported failure is never mistaken for "nothing happened".
@@ -439,7 +438,7 @@ fn split_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
 /// Splits the focused pane with the same adaptive direction as `split-pane`, then
 /// balances the whole tab while keeping focus on the pane the split created.
 fn new_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
-    let pane = prepare_pane_action(context, client, "adding a pane")?;
+    let pane = prepare_pane_action(context, client)?;
     let created = request_pane_split(client, &pane.pane_id, pane.split_direction)?;
     balance_created_pane(client, &pane, &created).map_err(|error| {
         format!(
@@ -449,27 +448,8 @@ fn new_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
     })
 }
 
-/// Closes the live focused pane, then balances what remains of its original tab.
-fn remove_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
-    let pane = prepare_pane_action(context, client, "removing a pane")?;
-    client.request("pane.close", json!({"pane_id": pane.pane_id}))?;
-    if pane.pane_count <= 2 {
-        return Ok(());
-    }
-    balance_after_close(client, &pane).map_err(|error| {
-        format!(
-            "closed {} but could not balance {}: {error}",
-            pane.pane_id, pane.tab_id
-        )
-    })
-}
-
 /// Reads and validates everything needed before a pane change can have side effects.
-fn prepare_pane_action(
-    context: &Context,
-    client: &mut SocketClient,
-    zoom_instruction: &str,
-) -> Result<PaneAction> {
+fn prepare_pane_action(context: &Context, client: &mut SocketClient) -> Result<PaneAction> {
     let snapshot = read_snapshot(client)?;
     let navigation = navigation_context(context, &snapshot);
     let tab_id = navigation.tab_id;
@@ -484,12 +464,11 @@ fn prepare_pane_action(
     if layout.zoomed {
         // Unzooming here would leave the tab zoomed out if a later step failed.
         return Err(format!(
-            "{tab_id} is zoomed; unzoom it before {zoom_instruction}"
+            "{tab_id} is zoomed; unzoom it before adding a pane"
         ));
     }
     Ok(PaneAction {
         pane_id: navigation.pane_id.to_owned(),
-        pane_count: snapshot_layout.panes.len(),
         split_direction: split_direction(&layout.root, pane),
         tab_id: tab_id.to_owned(),
         workspace_id: navigation.workspace_id.to_owned(),
@@ -526,41 +505,40 @@ fn balance_created_pane(client: &mut SocketClient, pane: &PaneAction, pane_id: &
     )
 }
 
-fn balance_after_close(client: &mut SocketClient, pane: &PaneAction) -> Result<()> {
+fn balance_exited_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
     let snapshot = read_snapshot(client)?;
-    let snapshot_layout = find_layout(&snapshot, &pane.tab_id)?;
+    let Some(snapshot_layout) = snapshot
+        .layouts
+        .iter()
+        .find(|layout| layout.tab_id == context.tab_id)
+    else {
+        return Ok(());
+    };
     if snapshot_layout
         .panes
         .iter()
-        .any(|current| current.pane_id == pane.pane_id)
+        .any(|pane| pane.pane_id == context.pane_id)
     {
         return Err(format!(
             "{} is still present in {}'s latest snapshot",
-            pane.pane_id, pane.tab_id
+            context.pane_id, context.tab_id
         ));
     }
-    let focus_pane_id = focus_after_close(&snapshot, snapshot_layout, &pane.tab_id)?;
+    if snapshot_layout.panes.len() <= 1 {
+        return Ok(());
+    }
+    let focus_pane_id = snapshot
+        .focused_pane_id
+        .as_deref()
+        .or_else(|| reading_order(snapshot_layout).into_iter().next())
+        .ok_or_else(|| "target tab has no surviving pane to focus".to_owned())?;
     balance_layout(
         client,
         snapshot_layout,
-        &pane.tab_id,
-        &pane.workspace_id,
+        &context.tab_id,
+        &context.workspace_id,
         focus_pane_id,
     )
-}
-
-fn focus_after_close<'a>(
-    snapshot: &'a Snapshot,
-    layout: &'a TabLayout,
-    tab_id: &str,
-) -> Result<&'a str> {
-    let live_focus = (snapshot.focused_tab_id.as_deref() == Some(tab_id))
-        .then_some(snapshot.focused_pane_id.as_deref())
-        .flatten()
-        .filter(|pane_id| layout.panes.iter().any(|pane| pane.pane_id == *pane_id));
-    live_focus
-        .or_else(|| reading_order(layout).into_iter().next())
-        .ok_or_else(|| format!("target tab contains no pane in herdr layout: {tab_id}"))
 }
 
 fn balance_layout(
