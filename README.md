@@ -13,7 +13,7 @@ edge it wraps to the previous or next tab; at a vertical edge it wraps to the pr
 workspace's active tab. The preferred position carries across boundaries, with reading order used to
 break ties.
 
-`new-pane` splits the focused pane and then evens out the row or column the new pane lands in.
+`split-pane` splits the focused pane and then evens out the row or column the new pane lands in.
 Herdr's own split halves the focused pane, so repeated splits leave the newest panes ever narrower;
 this action gives every slot of that run an equal share instead, and focuses the pane it created.
 It splits along the direction the tab already grows in, and falls back to the shape of the focused
@@ -46,7 +46,7 @@ a lock file. Each successful action writes a temporary file and atomically repla
 prevents partially written JSON but does not order overlapping processes. Either process may replace
 the anchor after the other focuses, and inputs that read the same snapshot may choose the same target.
 Each action uses the snapshot's live focused pane instead of its inherited pane context, reducing
-stale-context errors without promising exact ordering for simultaneous inputs. `new-pane` and
+stale-context errors without promising exact ordering for simultaneous inputs. `split-pane` and
 `balance` take no lock either; they check the session snapshot against the exported layout before
 touching anything, and a rebuild re-reads the tab before resizing it, which catches a tab that
 changed underneath them without serialising simultaneous inputs.
@@ -106,7 +106,7 @@ The plugin exposes these actions:
 - `jeiea.move-pane.focus-down`
 - `jeiea.move-pane.focus-up`
 - `jeiea.move-pane.focus-right`
-- `jeiea.move-pane.new-pane`
+- `jeiea.move-pane.split-pane`
 - `jeiea.move-pane.balance`
 
 Release maintenance and the checks that remain after making this repository public are documented in

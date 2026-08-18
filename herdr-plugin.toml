@@ -57,10 +57,10 @@ contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "focus", "right"]
 
 [[actions]]
-id = "new-pane"
-title = "Create pane and even out its row or column"
+id = "split-pane"
+title = "Split pane and even out its row or column"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "new-pane"]
+command = ["./bin/herdr-move-pane", "split-pane"]
 
 [[actions]]
 id = "balance"

@@ -46,7 +46,7 @@ enum Command {
         scope: Scope,
     },
     Focus(PaneDirection),
-    NewPane,
+    SplitPane,
     Balance,
 }
 
@@ -287,7 +287,7 @@ fn run() -> Result<()> {
     match command {
         Command::Focus(direction) => focus_with_anchor(&context, direction, &mut client),
         Command::Move { direction, scope } => move_pane(&context, direction, scope, &mut client),
-        Command::NewPane => new_pane(&context, &mut client),
+        Command::SplitPane => split_pane(&context, &mut client),
         Command::Balance => balance(&context, &mut client),
     }
 }
@@ -296,7 +296,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
     let args: Vec<_> = args.collect();
     match args.as_slice() {
         [operation] => match operation.as_str() {
-            "new-pane" => Ok(Command::NewPane),
+            "split-pane" => Ok(Command::SplitPane),
             "balance" => Ok(Command::Balance),
             _ => Err(usage()),
         },
@@ -327,7 +327,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
 }
 
 fn usage() -> String {
-    "usage: herdr-move-pane <workspace|tab> <next|previous> | focus <direction> | new-pane | balance"
+    "usage: herdr-move-pane <workspace|tab> <next|previous> | focus <direction> | split-pane | balance"
         .into()
 }
 
@@ -393,7 +393,7 @@ fn focus_with_anchor(
 /// Splits the focused pane along the direction the tab already grows in, then gives
 /// every pane of that row (or column) an equal share, which herdr's own 50:50 split
 /// does not do once a row holds more than two panes.
-fn new_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
+fn split_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
     let snapshot = read_snapshot(client)?;
     let navigation = navigation_context(context, &snapshot);
     let tab_id = navigation.tab_id;
@@ -411,7 +411,7 @@ fn new_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
             "{tab_id} is zoomed; unzoom it before adding a pane"
         ));
     }
-    let created = split_pane(
+    let created = request_pane_split(
         client,
         navigation.pane_id,
         split_direction(&layout.root, pane),
@@ -699,7 +699,7 @@ fn read_layout(client: &mut SocketClient, tab_id: &str) -> Result<ExportedLayout
         .map_err(|_| "herdr api layout returned an invalid response".into())
 }
 
-fn split_pane(
+fn request_pane_split(
     client: &mut SocketClient,
     pane_id: &str,
     direction: SplitDirection,
