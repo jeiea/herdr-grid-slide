@@ -865,15 +865,11 @@ fn new_pane_restores_the_created_pane_focus_after_rebuilding_through_a_scratch_t
                         ),
                     ),
                 )),
-                export_reply(split(
-                    "down",
-                    split(
-                        "down",
-                        split("right", leaf("pane-a"), leaf("pane-b")),
-                        split("right", leaf("pane-c"), leaf("pane-d")),
-                    ),
-                    leaf("pane-new"),
-                )),
+                export_reply(grid(&[
+                    &["pane-a", "pane-b"],
+                    &["pane-c", "pane-d"],
+                    &["pane-new"],
+                ])),
             ],
         )
         .with_replies("pane.split", [split_reply("pane-new")])
@@ -1051,11 +1047,7 @@ fn remove_pane_closes_live_focus_then_rebuilds_and_restores_herdrs_focus() {
                         split("down", leaf("pane-c"), leaf("pane-d")),
                     ),
                 )),
-                export_reply(split(
-                    "down",
-                    split("right", leaf("pane-a"), leaf("pane-b")),
-                    split("right", leaf("pane-c"), leaf("pane-d")),
-                )),
+                export_reply(grid(&[&["pane-a", "pane-b"], &["pane-c", "pane-d"]])),
             ],
         )
         .with_replies("pane.close", [close_reply()])
@@ -1353,26 +1345,83 @@ fn remove_pane_names_the_closed_pane_when_balance_fails() {
 }
 
 #[test]
-fn balance_lays_a_wide_tab_out_in_more_columns_than_rows() {
-    // 4 panes across 200x50 cells: sqrt(4 * 200 / (50 * 2)) rounds to 3 columns,
-    // leaving rows of 3 and 1.
+fn balance_prefers_complete_rows_for_four_wide_panes() {
+    // c* = sqrt(4 * 300 / (80 * 2)) is about 2.74. Of the surrounding integers,
+    // only 2 divides the pane count, so a complete 2-by-2 grid wins over 3 and 1.
     let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 67, 25),
-        pane("pane-b", 67, 0, 66, 25),
-        pane("pane-c", 133, 0, 67, 25),
-        pane("pane-d", 0, 25, 200, 25),
+        pane("pane-a", 0, 0, 150, 40),
+        pane("pane-b", 150, 0, 150, 40),
+        pane("pane-c", 0, 40, 150, 40),
+        pane("pane-d", 150, 40, 150, 40),
     ]))
     .with_replies(
         "layout.export",
-        [export_reply(split(
-            "down",
-            split(
-                "right",
-                split("right", leaf("pane-a"), leaf("pane-b")),
-                leaf("pane-c"),
-            ),
-            leaf("pane-d"),
-        ))],
+        [export_reply(grid(&[
+            &["pane-a", "pane-b"],
+            &["pane-c", "pane-d"],
+        ]))],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            ratio_call(&[], 0.5),
+            ratio_call(&[false], 0.5),
+            ratio_call(&[true], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn balance_uses_one_complete_row_when_three_wide_panes_fit() {
+    // c* = sqrt(3 * 300 / (80 * 2)) is about 2.37. Three divides the pane count,
+    // while 2 does not, so the allowed wider side of the bracket makes one row.
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 80),
+        pane("pane-b", 100, 0, 100, 80),
+        pane("pane-c", 200, 0, 100, 80),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(grid(&[&["pane-a", "pane-b", "pane-c"]]))],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            ratio_call(&[], 2.0 / 3.0),
+            ratio_call(&[false], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn balance_keeps_the_rounded_columns_when_neither_neighbor_divides_five() {
+    // c* is about 3.06, but neither 3 nor 4 divides 5, so ordinary rounding keeps
+    // the intentionally short final row.
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 40),
+        pane("pane-b", 100, 0, 100, 40),
+        pane("pane-c", 200, 0, 100, 40),
+        pane("pane-d", 0, 40, 150, 40),
+        pane("pane-e", 150, 40, 150, 40),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(grid(&[
+            &["pane-a", "pane-b", "pane-c"],
+            &["pane-d", "pane-e"],
+        ]))],
     );
 
     let run = run_balance(&herdr, "pane-a");
@@ -1386,13 +1435,115 @@ fn balance_lays_a_wide_tab_out_in_more_columns_than_rows() {
             ratio_call(&[], 0.5),
             ratio_call(&[false], 2.0 / 3.0),
             ratio_call(&[false, false], 0.5),
+            ratio_call(&[true], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn balance_prefers_more_columns_when_both_divisors_are_equally_close() {
+    // 12 panes across 49x24 cells put c* exactly at 3.5. Both surrounding integers
+    // divide 12, so the tie is resolved towards 4 columns rather than 3.
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 12, 8),
+        pane("pane-b", 12, 0, 12, 8),
+        pane("pane-c", 24, 0, 12, 8),
+        pane("pane-d", 36, 0, 13, 8),
+        pane("pane-e", 0, 8, 12, 8),
+        pane("pane-f", 12, 8, 12, 8),
+        pane("pane-g", 24, 8, 12, 8),
+        pane("pane-h", 36, 8, 13, 8),
+        pane("pane-i", 0, 16, 12, 8),
+        pane("pane-j", 12, 16, 12, 8),
+        pane("pane-k", 24, 16, 12, 8),
+        pane("pane-l", 36, 16, 13, 8),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(grid(&[
+            &["pane-a", "pane-b", "pane-c", "pane-d"],
+            &["pane-e", "pane-f", "pane-g", "pane-h"],
+            &["pane-i", "pane-j", "pane-k", "pane-l"],
+        ]))],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            ratio_call(&[], 2.0 / 3.0),
+            ratio_call(&[false], 0.5),
+            ratio_call(&[false, false], 0.75),
+            ratio_call(&[false, false, false], 2.0 / 3.0),
+            ratio_call(&[false, false, false, false], 0.5),
+            ratio_call(&[false, true], 0.75),
+            ratio_call(&[false, true, false], 2.0 / 3.0),
+            ratio_call(&[false, true, false, false], 0.5),
+            ratio_call(&[true], 0.75),
+            ratio_call(&[true, false], 2.0 / 3.0),
+            ratio_call(&[true, false, false], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn balance_uses_the_closer_divisor_when_both_neighbors_divide_the_panes() {
+    // 12 panes across 41x24 cells put c* at about 3.20. Both 3 and 4 divide 12,
+    // so the closer lower divisor makes four complete rows of three.
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 13, 6),
+        pane("pane-b", 13, 0, 14, 6),
+        pane("pane-c", 27, 0, 14, 6),
+        pane("pane-d", 0, 6, 13, 6),
+        pane("pane-e", 13, 6, 14, 6),
+        pane("pane-f", 27, 6, 14, 6),
+        pane("pane-g", 0, 12, 13, 6),
+        pane("pane-h", 13, 12, 14, 6),
+        pane("pane-i", 27, 12, 14, 6),
+        pane("pane-j", 0, 18, 13, 6),
+        pane("pane-k", 13, 18, 14, 6),
+        pane("pane-l", 27, 18, 14, 6),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(grid(&[
+            &["pane-a", "pane-b", "pane-c"],
+            &["pane-d", "pane-e", "pane-f"],
+            &["pane-g", "pane-h", "pane-i"],
+            &["pane-j", "pane-k", "pane-l"],
+        ]))],
+    );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            ratio_call(&[], 0.75),
+            ratio_call(&[false], 2.0 / 3.0),
+            ratio_call(&[false, false], 0.5),
+            ratio_call(&[false, false, false], 2.0 / 3.0),
+            ratio_call(&[false, false, false, false], 0.5),
+            ratio_call(&[false, false, true], 2.0 / 3.0),
+            ratio_call(&[false, false, true, false], 0.5),
+            ratio_call(&[false, true], 2.0 / 3.0),
+            ratio_call(&[false, true, false], 0.5),
+            ratio_call(&[true], 2.0 / 3.0),
+            ratio_call(&[true, false], 0.5),
         ]
     );
 }
 
 #[test]
 fn balance_stacks_a_tall_tab_into_a_single_column() {
-    // 4 panes across 50x200 cells: sqrt(4 * 50 / (200 * 2)) rounds to 1 column.
+    // 4 panes across 50x200 cells put c* below 1, so the lower clamp makes 1 column.
     let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 50, 50),
         pane("pane-b", 0, 50, 50, 50),
@@ -2519,6 +2670,21 @@ fn split(direction: &str, first: Value, second: Value) -> Value {
 
 fn leaf(pane_id: &str) -> Value {
     json!({"type": "pane", "pane_id": pane_id})
+}
+
+fn grid(rows: &[&[&str]]) -> Value {
+    rows.iter()
+        .map(|row| split_run(row))
+        .reduce(|first, second| split("down", first, second))
+        .unwrap()
+}
+
+fn split_run(pane_ids: &[&str]) -> Value {
+    pane_ids
+        .iter()
+        .map(|pane_id| leaf(pane_id))
+        .reduce(|first, second| split("right", first, second))
+        .unwrap()
 }
 
 fn export_call() -> Call {

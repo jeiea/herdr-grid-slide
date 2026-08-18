@@ -32,15 +32,16 @@ focused when it belongs to that tab; if another input moved focus elsewhere, the
 original tab's reading order is used instead.
 
 `balance` lays the whole tab out as an even two-axis grid, keeping the panes in reading order. The
-column count is roughly `sqrt(panes × width / (2 × height))`, the same cell correction as above,
-clamped between one and the pane count, and the last row is allowed to come up short. Each run does
-the least the tab needs: one that is already the right grid is only resized, one whose panes sit in
-the wrong cells is put right with swaps, and only a tab shaped differently is rebuilt. Rebuilding
-parks every pane but the first in a scratch tab and brings them back one at a time, because Herdr
-declines to move a pane within its own tab; the terminals carry across intact and the emptied
-scratch tab disappears with the last move. Whether it finishes or fails, `balance` puts the focus
-back on the pane it started from, best effort. Running `balance` again on its own result only
-reapplies the target ratios.
+ideal column count is `sqrt(panes × width / (2 × height))`, the same cell correction as above. If its
+floor or ceiling divides the pane count, the closest such divisor is used (the larger on a tie);
+otherwise the ideal is rounded normally, so the last row may come up short. The result stays clamped
+between one and the pane count. Each run does the least the tab needs: one that is already the right
+grid is only resized, one whose panes sit in the wrong cells is put right with swaps, and only a tab
+shaped differently is rebuilt. Rebuilding parks every pane but the first in a scratch tab and brings
+them back one at a time, because Herdr declines to move a pane within its own tab; the terminals carry
+across intact and the emptied scratch tab disappears with the last move. Whether it finishes or
+fails, `balance` puts the focus back on the pane it started from, best effort. Running `balance` again
+on its own result only reapplies the target ratios.
 
 All four layout actions stop with an error on a zoomed tab rather than unzooming it, so a failure
 part-way through cannot leave the tab zoomed out. Herdr clamps split ratios to [0.1, 0.9], so a run

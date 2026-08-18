@@ -1244,17 +1244,28 @@ fn reading_order(layout: &TabLayout) -> Vec<&str> {
 }
 
 /// How many panes each row of the target grid holds. Terminal cells are roughly
-/// twice as tall as they are wide, which the column count corrects for; the last row
-/// is allowed to come up short.
+/// twice as tall as they are wide, which the ideal column count corrects for. A
+/// divisor immediately below or above that ideal avoids a short final row; otherwise
+/// the last row is allowed to come up short.
 fn grid_row_sizes(count: usize, bounds: Bounds) -> Result<Vec<usize>> {
     if bounds.width <= 0.0 || bounds.height <= 0.0 {
         return Err("herdr reported a tab with no area; cannot balance".into());
     }
-    let columns = (count as f64 * bounds.width / (bounds.height * 2.0))
-        .sqrt()
-        .round()
-        .max(1.0) as usize;
-    let columns = columns.min(count);
+    let ideal_columns = (count as f64 * bounds.width / (bounds.height * 2.0)).sqrt();
+    let lower = (ideal_columns.floor() as usize).clamp(1, count);
+    let upper = (ideal_columns.ceil() as usize).clamp(1, count);
+    let columns = match (count.is_multiple_of(lower), count.is_multiple_of(upper)) {
+        (true, true) => {
+            if ideal_columns - (lower as f64) < upper as f64 - ideal_columns {
+                lower
+            } else {
+                upper
+            }
+        }
+        (true, false) => lower,
+        (false, true) => upper,
+        (false, false) => (ideal_columns.round() as usize).clamp(1, count),
+    };
     let rows = count.div_ceil(columns);
     Ok((0..rows)
         .map(|row| columns.min(count - row * columns))
