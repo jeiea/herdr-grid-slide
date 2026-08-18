@@ -26,6 +26,11 @@ leaves the column inside it alone.
 the whole tab while keeping the new pane focused. It does not even out the new pane's local row or
 column first; the whole-tab balance replaces that intermediate resize.
 
+`remove-pane` closes the focused pane and balances the remaining panes in its original tab. Closing
+the last pane, or leaving one pane behind, skips balance. The pane Herdr focuses after the close stays
+focused when it belongs to that tab; if another input moved focus elsewhere, the first pane in the
+original tab's reading order is used instead.
+
 `balance` lays the whole tab out as an even two-axis grid, keeping the panes in reading order. The
 column count is roughly `sqrt(panes × width / (2 × height))`, the same cell correction as above,
 clamped between one and the pane count, and the last row is allowed to come up short. Each run does
@@ -37,7 +42,7 @@ scratch tab disappears with the last move. Whether it finishes or fails, `balanc
 back on the pane it started from, best effort. Running `balance` again on its own result only
 reapplies the target ratios.
 
-All three layout actions stop with an error on a zoomed tab rather than unzooming it, so a failure
+All four layout actions stop with an error on a zoomed tab rather than unzooming it, so a failure
 part-way through cannot leave the tab zoomed out. Herdr clamps split ratios to [0.1, 0.9], so a run
 of more than ten same-direction slots cannot be made exactly even; rebuilt grids join panes as
 balanced halves and stay clear of the clamp. A rebuild that fails part-way tries to bring the
@@ -51,9 +56,10 @@ prevents partially written JSON but does not order overlapping processes. Either
 the anchor after the other focuses, and inputs that read the same snapshot may choose the same target.
 Each action uses the snapshot's live focused pane instead of its inherited pane context, reducing
 stale-context errors without promising exact ordering for simultaneous inputs. `split-pane`,
-`new-pane`, and `balance` take no lock either; they check the session snapshot against the exported
-layout before touching anything, and a rebuild re-reads the tab before resizing it, which catches a
-tab that changed underneath them without serialising simultaneous inputs.
+`new-pane`, `remove-pane`, and `balance` take no lock either; they check the session snapshot against
+the exported layout before touching anything. Pane creation and removal re-read the affected tab
+before balancing it, and a rebuild reads it once more before resizing, which catches a tab that
+changed underneath them without serialising simultaneous inputs.
 
 Actions use `HERDR_SOCKET_PATH` directly for both the session snapshot and the resulting pane
 operation, avoiding an additional Herdr CLI process per key press.
@@ -112,6 +118,7 @@ The plugin exposes these actions:
 - `jeiea.move-pane.focus-right`
 - `jeiea.move-pane.split-pane`
 - `jeiea.move-pane.new-pane`
+- `jeiea.move-pane.remove-pane`
 - `jeiea.move-pane.balance`
 
 Release maintenance and the checks that remain after making this repository public are documented in

@@ -69,6 +69,12 @@ contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "new-pane"]
 
 [[actions]]
+id = "remove-pane"
+title = "Close pane and balance the tab"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "remove-pane"]
+
+[[actions]]
 id = "balance"
 title = "Balance panes into even grid"
 contexts = ["pane"]
