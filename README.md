@@ -1,12 +1,18 @@
 # herdr-move-pane
 
-Move the current Herdr pane cyclically to the adjacent tab or workspace, navigate panes in visual
-order across container boundaries, add a pane without squeezing the ones around it, or lay a whole
-tab out as an even grid. A moved pane splits the destination on the right at a 50:50 ratio and keeps
-focus. When a pane exits, the plugin automatically balances the tab it belonged to.
+Move the current Herdr pane cyclically to the adjacent tab or workspace, reorder the workspaces
+themselves, navigate panes in visual order across container boundaries, add a pane without squeezing
+the ones around it, or lay a whole tab out as an even grid. A moved pane splits the destination on
+the right at a 50:50 ratio and keeps focus. When a pane exits, the plugin automatically balances the
+tab it belonged to.
 
 Workspace moves target the active tab of the adjacent workspace. Tab moves stay within the current
 workspace. Both use the visible `number` order and wrap at either end.
+
+`move-workspace` reorders the workspaces themselves instead of moving a pane: it shifts the active
+workspace one position through the visible `number` order, wrapping from either end to the other.
+Herdr keeps the active and selected workspaces by identity, so focus stays on the moved workspace.
+With a single workspace the action succeeds without side effects.
 
 Directional focus preserves the cross-axis position across panes where possible. At a horizontal
 edge it wraps to the previous or next tab; at a vertical edge it wraps to the previous or next
@@ -121,6 +127,8 @@ The plugin exposes these actions:
 - `jeiea.move-pane.to-previous-workspace`
 - `jeiea.move-pane.to-next-tab`
 - `jeiea.move-pane.to-previous-tab`
+- `jeiea.move-pane.move-workspace-next`
+- `jeiea.move-pane.move-workspace-previous`
 - `jeiea.move-pane.focus-left`
 - `jeiea.move-pane.focus-down`
 - `jeiea.move-pane.focus-up`

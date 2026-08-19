@@ -42,6 +42,128 @@ fn moves_wrap_by_visible_workspace_and_tab_number() {
 }
 
 #[test]
+fn move_workspace_steps_through_the_visible_number_order() {
+    // The snapshot lists the workspaces out of number order, so a slot taken from the
+    // array order would land the workspace next to the wrong neighbour.
+    let herdr = FakeHerdr::new(shuffled_workspace_snapshot());
+
+    for (workspace_id, tab_id, direction, insert_index) in [
+        ("workspace-2", "tab-2-1", "next", 3),
+        ("workspace-2", "tab-2-1", "previous", 0),
+    ] {
+        let run = herdr.run(
+            workspace_id,
+            tab_id,
+            "pane-current",
+            &["move-workspace", direction],
+        );
+
+        run.assert_success();
+        assert_eq!(
+            run.requests,
+            [
+                snapshot_call(),
+                workspace_move_call(workspace_id, insert_index),
+            ]
+        );
+    }
+}
+
+#[test]
+fn move_workspace_wraps_across_the_ends_with_pre_removal_slots() {
+    // herdr's workspace.move takes the insertion slot counted before the workspace is
+    // removed: the last one wraps to slot 0 and the first one to one past the last.
+    let herdr = FakeHerdr::new(shuffled_workspace_snapshot());
+
+    for (workspace_id, tab_id, direction, insert_index) in [
+        ("workspace-3", "tab-3-1", "next", 0),
+        ("workspace-1", "tab-1-1", "previous", 3),
+    ] {
+        let run = herdr.run(
+            workspace_id,
+            tab_id,
+            "pane-current",
+            &["move-workspace", direction],
+        );
+
+        run.assert_success();
+        assert_eq!(
+            run.requests,
+            [
+                snapshot_call(),
+                workspace_move_call(workspace_id, insert_index),
+            ]
+        );
+    }
+}
+
+#[test]
+fn move_workspace_uses_live_snapshot_context_instead_of_stale_environment() {
+    let herdr = FakeHerdr::new(focused(
+        standard_snapshot(),
+        "workspace-2",
+        "tab-2-1",
+        "pane-live",
+    ));
+
+    let run = herdr.run(
+        "workspace-stale",
+        "tab-stale",
+        "pane-stale",
+        &["move-workspace", "next"],
+    );
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [snapshot_call(), workspace_move_call("workspace-2", 3)]
+    );
+}
+
+#[test]
+fn move_workspace_leaves_a_lone_workspace_alone() {
+    let herdr = FakeHerdr::new(snapshot(
+        json!([layout("tab-only", vec![pane("pane-only", 0, 0, 100, 80)])]),
+        json!([tab("workspace-only", "tab-only", 1)]),
+        json!([workspace("workspace-only", "tab-only", 1)]),
+    ));
+
+    let run = herdr.run(
+        "workspace-only",
+        "tab-only",
+        "pane-only",
+        &["move-workspace", "next"],
+    );
+
+    run.assert_success();
+    assert_eq!(run.requests, [snapshot_call()]);
+}
+
+#[test]
+fn move_workspace_reports_the_herdr_error_that_rejected_it() {
+    let herdr = FakeHerdr::new(standard_snapshot()).with_replies(
+        "workspace.move",
+        [Err("insert_index 9 is out of bounds".to_owned())],
+    );
+
+    let run = herdr.run(
+        "workspace-2",
+        "tab-2-1",
+        "pane-current",
+        &["move-workspace", "next"],
+    );
+
+    assert_eq!(
+        run.assert_failure(),
+        "workspace.move failed: insert_index 9 is out of bounds\n"
+    );
+    assert_eq!(
+        run.requests,
+        [snapshot_call(), workspace_move_call("workspace-2", 3)]
+    );
+}
+
+#[test]
 fn focuses_each_geometric_neighbor_inside_a_tab() {
     for (direction, target_id, target_rect) in [
         ("left", "pane-left", (0, 40)),
@@ -2287,16 +2409,21 @@ fn next_reply(replies: &mut HashMap<String, VecDeque<Reply>>, method: &str) -> O
 
 /// Absorbs the requests every scenario answers the same way, shaped like the live
 /// herdr 0.8 responses -- `pane.move` reports its outcome under `move_result`, where
-/// `changed`, `reason` and `created_tab` live, and `layout.set_split_ratio` echoes a
-/// layout the plugin never reads, so only its acknowledgement is modelled. Any other
-/// method must be scripted with [`FakeHerdr::with_replies`]; an unscripted one fails
-/// loudly instead of succeeding on an invented response.
+/// `changed`, `reason` and `created_tab` live, while `layout.set_split_ratio` echoes
+/// a layout and `workspace.move` the reordered workspace list, neither of which the
+/// plugin reads, so only their acknowledgements are modelled. Any other method must
+/// be scripted with [`FakeHerdr::with_replies`]; an unscripted one fails loudly
+/// instead of succeeding on an invented response.
 fn default_reply(call: &Call, snapshot: &Value) -> Reply {
     Ok(match call.method.as_str() {
         "session.snapshot" => json!({"type": "session_snapshot", "snapshot": snapshot}),
         "pane.focus" => json!({"pane": {"pane_id": call.params["pane_id"]}}),
         "pane.move" => json!({"type": "pane_move", "move_result": {"changed": true}}),
         "layout.set_split_ratio" => json!({"type": "layout_split_ratio_set"}),
+        "workspace.move" => json!({
+            "type": "workspace_list",
+            "workspaces": snapshot["workspaces"].clone(),
+        }),
         method => panic!("unscripted socket method: {method}"),
     })
 }
@@ -2340,6 +2467,20 @@ fn standard_workspaces() -> Value {
         workspace("workspace-2", "tab-2-2", 2),
         workspace("workspace-3", "tab-3-1", 3),
     ])
+}
+
+/// The standard session with its workspaces listed out of number order, which the
+/// plugin has to sort back into the visible order before picking a slot.
+fn shuffled_workspace_snapshot() -> Value {
+    snapshot(
+        standard_layouts(),
+        standard_tabs(),
+        json!([
+            workspace("workspace-3", "tab-3-1", 3),
+            workspace("workspace-1", "tab-1-1", 1),
+            workspace("workspace-2", "tab-2-2", 2),
+        ]),
+    )
 }
 
 fn standard_layouts() -> Value {
@@ -2596,6 +2737,13 @@ fn snapshot_call() -> Call {
 
 fn focus_call(pane_id: &str) -> Call {
     call("pane.focus", json!({"pane_id": pane_id}))
+}
+
+fn workspace_move_call(workspace_id: &str, insert_index: usize) -> Call {
+    call(
+        "workspace.move",
+        json!({"workspace_id": workspace_id, "insert_index": insert_index}),
+    )
 }
 
 fn move_to_tab(pane_id: &str, tab_id: &str) -> Value {

@@ -45,6 +45,7 @@ enum Command {
         direction: MoveDirection,
         scope: Scope,
     },
+    MoveWorkspace(MoveDirection),
     Focus(PaneDirection),
     SplitPane,
     NewPane,
@@ -296,6 +297,7 @@ fn run() -> Result<()> {
     match command {
         Command::Focus(direction) => focus_with_anchor(&context, direction, &mut client),
         Command::Move { direction, scope } => move_pane(&context, direction, scope, &mut client),
+        Command::MoveWorkspace(direction) => move_workspace(&context, direction, &mut client),
         Command::SplitPane => split_pane(&context, &mut client),
         Command::NewPane => new_pane(&context, &mut client),
         Command::OnPaneExited => balance_exited_pane(&context, &mut client),
@@ -322,25 +324,34 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
                 _ => return Err(usage()),
             }))
         }
+        [operation, direction] if operation == "move-workspace" => {
+            Ok(Command::MoveWorkspace(parse_move_direction(direction)?))
+        }
         [scope, direction] => {
             let scope = match scope.as_str() {
                 "workspace" => Scope::Workspace,
                 "tab" => Scope::Tab,
                 _ => return Err(usage()),
             };
-            let direction = match direction.as_str() {
-                "next" => MoveDirection::Next,
-                "previous" => MoveDirection::Previous,
-                _ => return Err(usage()),
-            };
-            Ok(Command::Move { direction, scope })
+            Ok(Command::Move {
+                direction: parse_move_direction(direction)?,
+                scope,
+            })
         }
         _ => Err(usage()),
     }
 }
 
+fn parse_move_direction(direction: &str) -> Result<MoveDirection> {
+    match direction {
+        "next" => Ok(MoveDirection::Next),
+        "previous" => Ok(MoveDirection::Previous),
+        _ => Err(usage()),
+    }
+}
+
 fn usage() -> String {
-    "usage: herdr-move-pane <workspace|tab> <next|previous> | focus <direction> | split-pane | new-pane | balance | on-pane-exited".into()
+    "usage: herdr-move-pane <workspace|tab> <next|previous> | move-workspace <next|previous> | focus <direction> | split-pane | new-pane | balance | on-pane-exited".into()
 }
 
 fn read_context(require_focus: bool) -> Result<Context> {
@@ -378,6 +389,46 @@ fn move_pane(
                 "ratio": 0.5,
             },
             "focus": true,
+        }),
+    )?;
+    Ok(())
+}
+
+/// Moves the active workspace itself one step through the visible number order,
+/// wrapping at either end. herdr's `workspace.move` takes the insertion slot counted
+/// before the workspace is removed: stepping forward inserts two slots ahead, and
+/// the ends wrap to slot 0 or to one past the last.
+fn move_workspace(
+    context: &Context,
+    direction: MoveDirection,
+    client: &mut SocketClient,
+) -> Result<()> {
+    let snapshot = read_snapshot(client)?;
+    let navigation = navigation_context(context, &snapshot);
+    let items = workspaces_in_visible_order(&snapshot);
+    if items.len() < 2 {
+        return Ok(());
+    }
+    let source = items
+        .iter()
+        .position(|workspace| workspace.workspace_id == navigation.workspace_id)
+        .ok_or_else(|| {
+            format!(
+                "current item not found in herdr snapshot: {}",
+                navigation.workspace_id
+            )
+        })?;
+    let insert_index = match direction {
+        MoveDirection::Next if source == items.len() - 1 => 0,
+        MoveDirection::Next => source + 2,
+        MoveDirection::Previous if source == 0 => items.len(),
+        MoveDirection::Previous => source - 1,
+    };
+    client.request(
+        "workspace.move",
+        json!({
+            "workspace_id": navigation.workspace_id,
+            "insert_index": insert_index,
         }),
     )?;
     Ok(())
@@ -852,8 +903,7 @@ fn resolve_move_target_tab<'a>(
 ) -> Result<&'a str> {
     match scope {
         Scope::Workspace => {
-            let mut items: Vec<_> = snapshot.workspaces.iter().collect();
-            items.sort_by(|left, right| left.number.total_cmp(&right.number));
+            let items = workspaces_in_visible_order(snapshot);
             adjacent(&items, context.workspace_id, direction, |item| {
                 item.workspace_id.as_str()
             })
@@ -872,6 +922,12 @@ fn resolve_move_target_tab<'a>(
             .map(|item| item.tab_id.as_str())
         }
     }
+}
+
+fn workspaces_in_visible_order(snapshot: &Snapshot) -> Vec<&Workspace> {
+    let mut items: Vec<_> = snapshot.workspaces.iter().collect();
+    items.sort_by(|left, right| left.number.total_cmp(&right.number));
+    items
 }
 
 fn adjacent<'a, T>(
@@ -1038,8 +1094,7 @@ fn resolve_boundary_tab<'a>(
         })
         .map(|item| item.tab_id.as_str());
     }
-    let mut items: Vec<_> = snapshot.workspaces.iter().collect();
-    items.sort_by(|left, right| left.number.total_cmp(&right.number));
+    let items = workspaces_in_visible_order(snapshot);
     let movement = if matches!(direction, PaneDirection::Down) {
         MoveDirection::Next
     } else {
