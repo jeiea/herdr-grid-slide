@@ -49,6 +49,7 @@ enum Command {
     Focus(PaneDirection),
     SplitPane,
     NewPane,
+    OnPaneCreated,
     OnPaneExited,
     Balance,
 }
@@ -300,6 +301,7 @@ fn run() -> Result<()> {
         Command::MoveWorkspace(direction) => move_workspace(&context, direction, &mut client),
         Command::SplitPane => split_pane(&context, &mut client),
         Command::NewPane => new_pane(&context, &mut client),
+        Command::OnPaneCreated => even_out_created_pane_event(&context, &mut client),
         Command::OnPaneExited => balance_exited_pane(&context, &mut client),
         Command::Balance => balance(&context, &mut client),
     }
@@ -311,6 +313,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
         [operation] => match operation.as_str() {
             "split-pane" => Ok(Command::SplitPane),
             "new-pane" => Ok(Command::NewPane),
+            "on-pane-created" => Ok(Command::OnPaneCreated),
             "on-pane-exited" => Ok(Command::OnPaneExited),
             "balance" => Ok(Command::Balance),
             _ => Err(usage()),
@@ -351,7 +354,7 @@ fn parse_move_direction(direction: &str) -> Result<MoveDirection> {
 }
 
 fn usage() -> String {
-    "usage: herdr-move-pane <workspace|tab> <next|previous> | move-workspace <next|previous> | focus <direction> | split-pane | new-pane | balance | on-pane-exited".into()
+    "usage: herdr-move-pane <workspace|tab> <next|previous> | move-workspace <next|previous> | focus <direction> | split-pane | new-pane | balance | on-pane-created | on-pane-exited".into()
 }
 
 fn read_context(require_focus: bool) -> Result<Context> {
@@ -461,26 +464,50 @@ fn split_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
     let created = request_pane_split(client, &pane.pane_id, pane.split_direction)?;
     // Every failure past this point has to say the pane already exists, so that a
     // reported failure is never mistaken for "nothing happened".
-    let layout = read_layout(client, &pane.tab_id).map_err(|error| {
-        format!(
-            "created {created} but could not read {} back: {error}",
-            pane.tab_id
-        )
-    })?;
-    let descent = descent_to_pane(&layout.root, &created).ok_or_else(|| {
-        format!(
-            "created {created} but it is missing from {}; left the sizes alone",
-            pane.tab_id
-        )
+    even_out_created_pane(
+        client,
+        &pane.tab_id,
+        &created,
+        &format!("created {created}"),
+    )
+}
+
+/// Evens out the pane named by a creation event without creating another pane or
+/// changing focus. The first pane of a new tab or workspace has no parent run and
+/// therefore succeeds after the layout read without resizing anything.
+fn even_out_created_pane_event(context: &Context, client: &mut SocketClient) -> Result<()> {
+    even_out_created_pane(
+        client,
+        &context.tab_id,
+        &context.pane_id,
+        &format!(
+            "pane.created reported {} in {}",
+            context.pane_id, context.tab_id
+        ),
+    )
+}
+
+/// Gives every slot in the same-direction run containing a newly created pane an
+/// equal share. A subtree running across that direction remains one slot.
+fn even_out_created_pane(
+    client: &mut SocketClient,
+    tab_id: &str,
+    pane_id: &str,
+    failure_context: &str,
+) -> Result<()> {
+    let layout = read_layout(client, tab_id)
+        .map_err(|error| format!("{failure_context} but could not read {tab_id} back: {error}"))?;
+    let descent = descent_to_pane(&layout.root, pane_id).ok_or_else(|| {
+        format!("{failure_context} but it is missing from {tab_id}; left the sizes alone")
     })?;
     for (path, ratio) in even_ratios(&descent) {
         client
             .request(
                 "layout.set_split_ratio",
-                json!({"tab_id": pane.tab_id, "path": path, "ratio": ratio}),
+                json!({"tab_id": tab_id, "path": path, "ratio": ratio}),
             )
             .map_err(|error| {
-                format!("created {created} but could not even out the sizes: {error}")
+                format!("{failure_context} but could not even out the sizes: {error}")
             })?;
     }
     Ok(())

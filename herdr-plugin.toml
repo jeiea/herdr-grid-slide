@@ -87,5 +87,9 @@ contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "balance"]
 
 [[events]]
+on = "pane.created"
+command = ["./bin/herdr-move-pane", "on-pane-created"]
+
+[[events]]
 on = "pane.exited"
 command = ["./bin/herdr-move-pane", "on-pane-exited"]

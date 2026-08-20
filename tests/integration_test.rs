@@ -896,6 +896,126 @@ fn split_pane_stops_evening_out_at_the_first_rejected_ratio() {
 }
 
 #[test]
+fn pane_created_evens_out_every_split_of_the_created_panes_run() {
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 25, 100),
+        pane("pane-b", 25, 0, 25, 100),
+        pane("pane-c", 50, 0, 25, 100),
+        pane("pane-new", 75, 0, 25, 100),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "right",
+            leaf("pane-a"),
+            split(
+                "right",
+                leaf("pane-b"),
+                split("right", leaf("pane-c"), leaf("pane-new")),
+            ),
+        ))],
+    );
+
+    let run = run_on_pane_created(&herdr, "pane-new");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            export_call(),
+            ratio_call(&[], 0.25),
+            ratio_call(&[true], 1.0 / 3.0),
+            ratio_call(&[true, true], 0.5),
+        ]
+    );
+}
+
+#[test]
+fn pane_created_counts_a_crosswise_subtree_as_one_slot() {
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 100, 40),
+        pane("pane-b", 100, 0, 100, 20),
+        pane("pane-c", 100, 20, 50, 20),
+        pane("pane-new", 150, 20, 50, 20),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "right",
+            leaf("pane-a"),
+            split(
+                "down",
+                leaf("pane-b"),
+                split("right", leaf("pane-c"), leaf("pane-new")),
+            ),
+        ))],
+    );
+
+    let run = run_on_pane_created(&herdr, "pane-new");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [export_call(), ratio_call(&[true, true], 0.5)]
+    );
+}
+
+#[test]
+fn pane_created_leaves_the_first_pane_alone() {
+    let herdr = FakeHerdr::new(tab_snapshot(vec![pane("pane-new", 0, 0, 100, 40)]))
+        .with_replies("layout.export", [export_reply(leaf("pane-new"))]);
+
+    let run = run_on_pane_created(&herdr, "pane-new");
+
+    run.assert_success();
+    assert_eq!(run.requests, [export_call()]);
+}
+
+#[test]
+fn pane_created_fails_when_the_latest_layout_does_not_contain_the_pane() {
+    let herdr = FakeHerdr::new(tab_snapshot(vec![pane("pane-a", 0, 0, 100, 40)]))
+        .with_replies("layout.export", [export_reply(leaf("pane-a"))]);
+
+    let run = run_on_pane_created(&herdr, "pane-new");
+
+    assert_eq!(
+        run.assert_failure(),
+        "pane.created reported pane-new in tab-main but it is missing from tab-main; \
+         left the sizes alone\n"
+    );
+    assert_eq!(run.requests, [export_call()]);
+}
+
+#[test]
+fn pane_created_reports_ratio_failures_with_the_event_context() {
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 50, 100),
+        pane("pane-new", 50, 0, 50, 100),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "right",
+            leaf("pane-a"),
+            leaf("pane-new"),
+        ))],
+    )
+    .with_replies(
+        "layout.set_split_ratio",
+        [Err("path is out of date".to_owned())],
+    );
+
+    let run = run_on_pane_created(&herdr, "pane-new");
+
+    assert_eq!(
+        run.assert_failure(),
+        "pane.created reported pane-new in tab-main but could not even out the sizes: \
+         layout.set_split_ratio failed: path is out of date\n"
+    );
+    assert_eq!(run.requests, [export_call(), ratio_call(&[], 0.5)]);
+}
+
+#[test]
 fn new_pane_splits_then_balances_the_latest_tab_and_preserves_its_focus() {
     let before = tab_snapshot(vec![pane("pane-a", 0, 0, 300, 40)]);
     let after = focused(
@@ -2512,6 +2632,10 @@ fn run_split_pane(herdr: &FakeHerdr, pane_id: &str) -> Run {
 
 fn run_new_pane(herdr: &FakeHerdr, pane_id: &str) -> Run {
     herdr.run("workspace-1", "tab-main", pane_id, &["new-pane"])
+}
+
+fn run_on_pane_created(herdr: &FakeHerdr, pane_id: &str) -> Run {
+    herdr.run("workspace-1", "tab-main", pane_id, &["on-pane-created"])
 }
 
 fn run_on_pane_exited(herdr: &FakeHerdr, pane_id: &str) -> Run {
