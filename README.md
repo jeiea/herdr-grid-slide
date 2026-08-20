@@ -4,7 +4,7 @@ Move the current Herdr pane cyclically to the adjacent tab or workspace, reorder
 themselves, navigate panes in visual order across container boundaries, add a pane without squeezing
 the ones around it, or lay a whole tab out as an even grid. A moved pane splits the destination on
 the right at a 50:50 ratio and keeps focus. When a pane exits, the plugin automatically balances the
-tab it belonged to, and when one is created, it automatically evens out the row or column it joined.
+tab it belonged to, and when one is created, it automatically balances the whole tab.
 
 Workspace moves target the active tab of the adjacent workspace. Tab moves stay within the current
 workspace. Both use the visible `number` order and wrap at either end.
@@ -19,26 +19,21 @@ edge it wraps to the previous or next tab; at a vertical edge it wraps to the pr
 workspace's active tab. The preferred position carries across boundaries, with reading order used to
 break ties.
 
-`split-pane` splits the focused pane and then evens out the row or column the new pane lands in.
-Herdr's own split halves the focused pane, so repeated splits leave the newest panes ever narrower;
-this action gives every slot of that run an equal share instead, and focuses the pane it created.
-It splits along the direction the tab already grows in, and falls back to the shape of the focused
-pane when the tab mixes directions or holds a single pane: wider than twice its height splits to
-the right, anything else splits downwards, which accounts for terminal cells being about twice as
-tall as they are wide. A subtree running the other way counts as one slot, so evening out a row
-leaves the column inside it alone.
+`split-pane` and `new-pane` are compatible action names for the same operation. They split the
+focused pane at 50:50 along the direction the tab already grows in, and fall back to the shape of
+the focused pane when the tab mixes directions or holds a single pane: wider than twice its height
+splits to the right, anything else splits downwards, which accounts for terminal cells being about
+twice as tall as they are wide. The actions stop after requesting the split; all creation
+post-processing belongs to the `pane.created` hook.
 
-The `pane.created` hook applies that same local row-or-column equalization when a pane is split
-through the Herdr CLI or API. It only resizes the new pane's same-direction run and never changes
-focus, so the choice made with `--focus` or `--no-focus` is preserved. The root pane of a new tab or
-workspace has no run to resize, so its creation succeeds without side effects. The hook also runs
-for panes created by this plugin; with `split-pane`, its local post-processing only reapplies the
-same ratios.
-
-`new-pane` chooses the same adaptive split direction, creates the pane at 50:50, and then balances
-the whole tab while keeping the new pane focused. Its action path does not even out the new pane's
-local row or column first; the creation hook may do so independently, and the whole-tab balance
-replaces that intermediate resize.
+The `pane.created` hook is the single entry point for balancing after a pane is created through the
+Herdr CLI, API, an agent, or either plugin action. It reads the latest session snapshot, verifies the
+event pane is present in the event tab, and, for a multi-pane tab, requires the snapshot and exported
+layout to contain the same panes before balancing the whole tab with the same grid algorithm as
+`balance`. Swaps and rebuilds restore the snapshot's global focused pane, preserving the result of
+`--focus` or `--no-focus`; if the snapshot has no global focus, the new pane is used instead. A first
+pane has no layout work to do, so its creation succeeds after the snapshot read without exporting or
+changing the layout.
 
 The `pane.exited` hook balances the exited pane's tab from the event context, even when another tab
 is active. It restores the session's global focus after balancing; if the snapshot has no global
@@ -57,8 +52,8 @@ across intact and the emptied scratch tab disappears with the last move. Whether
 fails, `balance` puts the focus back on the pane it started from, best effort. Running `balance` again
 on its own result only reapplies the target ratios.
 
-The three explicit layout actions and automatic exit balance stop with an error on a zoomed tab
-rather than unzooming it, so a failure part-way through cannot leave the tab zoomed out. Herdr
+The pane creation actions, `balance`, and automatic event balances stop with an error on a zoomed
+tab rather than unzooming it, so a failure part-way through cannot leave the tab zoomed out. Herdr
 clamps split ratios to [0.1, 0.9], so a run of more than ten same-direction slots cannot be made
 exactly even; rebuilt grids join panes as balanced halves and stay clear of the clamp. A rebuild
 that fails part-way tries to bring the parked panes back beside the first one, preferring to keep
@@ -72,15 +67,19 @@ prevents partially written JSON but does not order overlapping processes. Either
 the anchor after the other focuses, and inputs that read the same snapshot may choose the same target.
 Each action uses the snapshot's live focused pane instead of its inherited pane context, reducing
 stale-context errors without promising exact ordering for simultaneous inputs. `split-pane`,
-`new-pane`, and `balance` take no lock either; they check the session snapshot against the exported
-layout before touching anything. Pane creation re-reads the affected tab before balancing it, and a
-rebuild reads it once more before resizing, which catches a tab that changed underneath them without
-serialising simultaneous inputs.
+`new-pane`, and `balance` take no lock either; the actions check the session snapshot against the
+exported layout before requesting a split, while the asynchronous creation hook reads a new snapshot
+before balancing. A rebuild exports the tab once more before resizing, which catches a tab that
+changed underneath it without serialising simultaneous inputs.
 
-The creation hook exports the event's `HERDR_TAB_ID` once and looks up `HERDR_PANE_ID` in that latest
-layout. It does not retry or serialize overlapping creations. A pane missing from that layout, a
-failed export, or a rejected ratio stops the hook with an error that names the creation event; a
-later creation is handled as a separate run.
+Herdr runs event hooks asynchronously and may run consecutive creation hooks in parallel. The
+creation hook does not retry, debounce, or serialize them, so overlapping layout changes can fail
+the same consistency checks as a manual balance. Herdr can also lose events during session restore
+or when its global concurrent-command limit is exceeded. Hook failures do not change the action or
+CLI result that created the pane; inspect `herdr plugin log list` for the transient error and run the
+`balance` action to recover the tab manually. A missing event pane, snapshot or export failure,
+rejected ratio, or failed rebuild is reported with the `pane.created` workspace, tab, and pane
+context.
 
 Herdr handles the exit before servicing the hook's socket request, so the hook reads one fresh
 snapshot with the exited pane already removed. It uses the event's `HERDR_WORKSPACE_ID`,

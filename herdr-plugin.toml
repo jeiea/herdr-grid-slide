@@ -70,7 +70,7 @@ command = ["./bin/herdr-move-pane", "focus", "right"]
 
 [[actions]]
 id = "split-pane"
-title = "Split pane and even out its row or column"
+title = "Split pane and balance the tab"
 contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "split-pane"]
 

@@ -47,8 +47,7 @@ enum Command {
     },
     MoveWorkspace(MoveDirection),
     Focus(PaneDirection),
-    SplitPane,
-    NewPane,
+    CreatePane,
     OnPaneCreated,
     OnPaneExited,
     Balance,
@@ -71,8 +70,6 @@ struct NavigationContext<'a> {
 struct PaneAction {
     pane_id: String,
     split_direction: SplitDirection,
-    tab_id: String,
-    workspace_id: String,
 }
 
 #[derive(Deserialize)]
@@ -169,15 +166,6 @@ struct MoveOutcome {
 #[derive(Deserialize)]
 struct TabRef {
     tab_id: String,
-}
-
-impl LayoutNode {
-    fn direction(&self) -> Option<SplitDirection> {
-        match self {
-            LayoutNode::Split { direction, .. } => Some(*direction),
-            LayoutNode::Pane { .. } => None,
-        }
-    }
 }
 
 impl SplitDirection {
@@ -299,9 +287,8 @@ fn run() -> Result<()> {
         Command::Focus(direction) => focus_with_anchor(&context, direction, &mut client),
         Command::Move { direction, scope } => move_pane(&context, direction, scope, &mut client),
         Command::MoveWorkspace(direction) => move_workspace(&context, direction, &mut client),
-        Command::SplitPane => split_pane(&context, &mut client),
-        Command::NewPane => new_pane(&context, &mut client),
-        Command::OnPaneCreated => even_out_created_pane_event(&context, &mut client),
+        Command::CreatePane => create_pane(&context, &mut client),
+        Command::OnPaneCreated => balance_created_pane_event(&context, &mut client),
         Command::OnPaneExited => balance_exited_pane(&context, &mut client),
         Command::Balance => balance(&context, &mut client),
     }
@@ -311,8 +298,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
     let args: Vec<_> = args.collect();
     match args.as_slice() {
         [operation] => match operation.as_str() {
-            "split-pane" => Ok(Command::SplitPane),
-            "new-pane" => Ok(Command::NewPane),
+            "split-pane" | "new-pane" => Ok(Command::CreatePane),
             "on-pane-created" => Ok(Command::OnPaneCreated),
             "on-pane-exited" => Ok(Command::OnPaneExited),
             "balance" => Ok(Command::Balance),
@@ -456,74 +442,58 @@ fn focus_with_anchor(
     write_focus_anchor_state(state_dir, &next_state)
 }
 
-/// Splits the focused pane along the direction the tab already grows in, then gives
-/// every pane of that row (or column) an equal share, which herdr's own 50:50 split
-/// does not do once a row holds more than two panes.
-fn split_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
+/// Splits the focused pane along the direction the tab already grows in. The
+/// `pane.created` hook balances the affected tab after herdr applies the split.
+fn create_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
     let pane = prepare_pane_action(context, client)?;
-    let created = request_pane_split(client, &pane.pane_id, pane.split_direction)?;
-    // Every failure past this point has to say the pane already exists, so that a
-    // reported failure is never mistaken for "nothing happened".
-    even_out_created_pane(
-        client,
-        &pane.tab_id,
-        &created,
-        &format!("created {created}"),
-    )
-}
-
-/// Evens out the pane named by a creation event without creating another pane or
-/// changing focus. The first pane of a new tab or workspace has no parent run and
-/// therefore succeeds after the layout read without resizing anything.
-fn even_out_created_pane_event(context: &Context, client: &mut SocketClient) -> Result<()> {
-    even_out_created_pane(
-        client,
-        &context.tab_id,
-        &context.pane_id,
-        &format!(
-            "pane.created reported {} in {}",
-            context.pane_id, context.tab_id
-        ),
-    )
-}
-
-/// Gives every slot in the same-direction run containing a newly created pane an
-/// equal share. A subtree running across that direction remains one slot.
-fn even_out_created_pane(
-    client: &mut SocketClient,
-    tab_id: &str,
-    pane_id: &str,
-    failure_context: &str,
-) -> Result<()> {
-    let layout = read_layout(client, tab_id)
-        .map_err(|error| format!("{failure_context} but could not read {tab_id} back: {error}"))?;
-    let descent = descent_to_pane(&layout.root, pane_id).ok_or_else(|| {
-        format!("{failure_context} but it is missing from {tab_id}; left the sizes alone")
-    })?;
-    for (path, ratio) in even_ratios(&descent) {
-        client
-            .request(
-                "layout.set_split_ratio",
-                json!({"tab_id": tab_id, "path": path, "ratio": ratio}),
-            )
-            .map_err(|error| {
-                format!("{failure_context} but could not even out the sizes: {error}")
-            })?;
-    }
+    request_pane_split(client, &pane.pane_id, pane.split_direction)?;
     Ok(())
 }
 
-/// Splits the focused pane with the same adaptive direction as `split-pane`, then
-/// balances the whole tab while keeping focus on the pane the split created.
-fn new_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
-    let pane = prepare_pane_action(context, client)?;
-    let created = request_pane_split(client, &pane.pane_id, pane.split_direction)?;
-    balance_created_pane(client, &pane, &created).map_err(|error| {
-        format!(
-            "created {created} but could not balance {}: {error}",
-            pane.tab_id
-        )
-    })
+/// Balances the event tab from herdr's latest snapshot and restores the session's
+/// global focus after swaps or a rebuild. The first pane has nothing to balance.
+fn balance_created_pane_event(context: &Context, client: &mut SocketClient) -> Result<()> {
+    let event = format!(
+        "pane.created reported {} in {} of {}",
+        context.pane_id, context.tab_id, context.workspace_id
+    );
+    let snapshot = read_snapshot(client)
+        .map_err(|error| format!("{event} but could not read the latest snapshot: {error}"))?;
+    let snapshot_layout = snapshot
+        .layouts
+        .iter()
+        .find(|layout| layout.tab_id == context.tab_id)
+        .ok_or_else(|| {
+            format!(
+                "{event} but {} is missing from the latest snapshot",
+                context.tab_id
+            )
+        })?;
+    if !snapshot_layout
+        .panes
+        .iter()
+        .any(|pane| pane.pane_id == context.pane_id)
+    {
+        return Err(format!(
+            "{event} but it is missing from {}'s latest snapshot",
+            context.tab_id
+        ));
+    }
+    if snapshot_layout.panes.len() == 1 {
+        return Ok(());
+    }
+    let focus_pane_id = snapshot
+        .focused_pane_id
+        .as_deref()
+        .unwrap_or(&context.pane_id);
+    balance_layout(
+        client,
+        snapshot_layout,
+        &context.tab_id,
+        &context.workspace_id,
+        focus_pane_id,
+    )
+    .map_err(|error| format!("{event} but could not balance {}: {error}", context.tab_id))
 }
 
 /// Reads and validates everything needed before a pane change can have side effects.
@@ -548,8 +518,6 @@ fn prepare_pane_action(context: &Context, client: &mut SocketClient) -> Result<P
     Ok(PaneAction {
         pane_id: navigation.pane_id.to_owned(),
         split_direction: split_direction(&layout.root, pane),
-        tab_id: tab_id.to_owned(),
-        workspace_id: navigation.workspace_id.to_owned(),
     })
 }
 
@@ -567,19 +535,6 @@ fn balance(context: &Context, client: &mut SocketClient) -> Result<()> {
         navigation.tab_id,
         navigation.workspace_id,
         navigation.pane_id,
-    )
-}
-
-fn balance_created_pane(client: &mut SocketClient, pane: &PaneAction, pane_id: &str) -> Result<()> {
-    let snapshot = read_snapshot(client)?;
-    let snapshot_layout = find_layout(&snapshot, &pane.tab_id)?;
-    find_pane(snapshot_layout, pane_id)?;
-    balance_layout(
-        client,
-        snapshot_layout,
-        &pane.tab_id,
-        &pane.workspace_id,
-        pane_id,
     )
 }
 
@@ -1276,24 +1231,6 @@ fn split_directions(node: &LayoutNode) -> Vec<SplitDirection> {
     }
 }
 
-/// Ratios that give every slot of the new pane's run an equal share, closest to the
-/// root first. The run is the largest group of same-direction splits joining the new
-/// pane's parent; a slot is a child that leaves the run, so a crosswise subtree
-/// counts as one slot however many panes it holds.
-fn even_ratios(descent: &[(&LayoutNode, bool)]) -> Vec<(Vec<bool>, f64)> {
-    let Some(direction) = descent.last().and_then(|(parent, _)| parent.direction()) else {
-        return Vec::new();
-    };
-    let joined = descent
-        .iter()
-        .rev()
-        .take_while(|(node, _)| node.direction() == Some(direction))
-        .count();
-    let run_root = descent.len() - joined;
-    let path = descent[..run_root].iter().map(|(_, branch)| *branch);
-    ratio_updates(descent[run_root].0, direction, path.collect())
-}
-
 fn reading_order(layout: &TabLayout) -> Vec<&str> {
     let mut panes: Vec<_> = layout.panes.iter().collect();
     panes.sort_by(|left, right| compare_reading_order(left, right));
@@ -1471,19 +1408,6 @@ fn slot_count(node: &LayoutNode, direction: SplitDirection) -> usize {
             slot_count(first, direction) + slot_count(second, direction)
         }
         _ => 1,
-    }
-}
-
-/// The splits passed on the way down to a pane, each with the branch taken there.
-fn descent_to_pane<'a>(node: &'a LayoutNode, pane_id: &str) -> Option<Vec<(&'a LayoutNode, bool)>> {
-    match node {
-        LayoutNode::Pane { pane_id: found } => (found == pane_id).then(Vec::new),
-        LayoutNode::Split { first, second, .. } => [(first, false), (second, true)]
-            .into_iter()
-            .find_map(|(child, branch)| {
-                let descent = descent_to_pane(child, pane_id)?;
-                Some(std::iter::once((node, branch)).chain(descent).collect())
-            }),
     }
 }
 
