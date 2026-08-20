@@ -128,11 +128,21 @@ cargo fmt --check
 cargo clippy --all-targets -- -D warnings
 cargo test
 cargo build --release
+./scripts/build-plugin.sh
 herdr plugin link .
 ```
 
-When `target/release/herdr-move-pane` exists, the plugin build command copies that local binary into
-`bin/`. Otherwise it follows the same verified release-download path used by installations.
+After linking the checkout, rebuild and reload the plugin after source changes with:
+
+```sh
+mise run reload-plugin
+```
+
+The task builds `target/release/herdr-move-pane`, then `scripts/build-plugin.sh` atomically copies it
+to `bin/herdr-move-pane`, which is the executable referenced by every manifest action and event.
+Reloading Herdr's configuration alone does not update that executable. When no local release binary
+exists, the build script instead follows the same verified release-download path used by
+installations.
 
 The plugin exposes these actions:
 

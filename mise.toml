@@ -1,2 +1,10 @@
 [tools]
 rust = "1.97"
+
+[tasks.reload-plugin]
+description = "Build and reload the linked Herdr plugin"
+run = """
+cargo build --release
+./scripts/build-plugin.sh
+herdr server reload-config
+"""
