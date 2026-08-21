@@ -418,7 +418,7 @@ fn reports_the_herdr_error_that_rejected_an_action() {
 }
 
 #[test]
-fn split_pane_follows_the_only_split_direction_and_defers_balancing_to_the_hook() {
+fn split_and_new_pane_aliases_only_split_in_the_existing_direction() {
     // The focused pane is far taller than wide, but every split in the tab runs
     // rightwards, so the new pane joins that row instead of starting a column.
     let herdr = FakeHerdr::new(tab_snapshot(vec![
@@ -431,17 +431,19 @@ fn split_pane_follows_the_only_split_direction_and_defers_balancing_to_the_hook(
     )
     .with_replies("pane.split", [split_reply("pane-new")]);
 
-    let run = run_split_pane(&herdr, "pane-a");
+    for action in ["split-pane", "new-pane"] {
+        let run = herdr.run("workspace-1", "tab-main", "pane-a", &[action]);
 
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            split_call("pane-a", "right"),
-        ]
-    );
+        run.assert_success();
+        assert_eq!(
+            run.requests,
+            [
+                snapshot_call(),
+                export_call(),
+                split_call("pane-a", "right"),
+            ]
+        );
+    }
 }
 
 #[test]
@@ -559,279 +561,118 @@ fn split_pane_stops_before_splitting_when_snapshot_and_layout_disagree() {
 }
 
 #[test]
-fn pane_created_balances_its_background_tab_and_restores_global_focus() {
-    let snapshot = focused(
-        snapshot(
-            json!([
-                layout(
-                    "tab-main",
-                    vec![
-                        pane("pane-a", 0, 0, 100, 100),
-                        pane("pane-b", 100, 0, 100, 33),
-                        pane("pane-c", 100, 33, 100, 33),
-                        pane("pane-new", 100, 66, 100, 34),
-                    ],
-                ),
-                layout("tab-active", vec![pane("pane-active", 0, 0, 100, 40)]),
-            ]),
-            json!([
-                tab("workspace-1", "tab-main", 1),
-                tab("workspace-2", "tab-active", 1),
-            ]),
-            json!([
-                workspace("workspace-1", "tab-main", 1),
-                workspace("workspace-2", "tab-active", 2),
-            ]),
-        ),
-        "workspace-2",
-        "tab-active",
-        "pane-active",
-    );
-    let herdr = FakeHerdr::new(snapshot)
-        .with_replies(
-            "layout.export",
-            [
-                export_reply(split(
-                    "right",
-                    leaf("pane-a"),
-                    split(
-                        "down",
-                        leaf("pane-b"),
-                        split("down", leaf("pane-c"), leaf("pane-new")),
-                    ),
-                )),
-                export_reply(grid(&[&["pane-a", "pane-b"], &["pane-c", "pane-new"]])),
-            ],
-        )
-        .with_replies("pane.move", [new_tab_reply("tab-scratch"), move_reply()]);
-
-    let run = run_on_pane_created(&herdr, "pane-new");
-
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            move_call("pane-b", new_tab_destination()),
-            move_call("pane-c", scratch_destination()),
-            move_call("pane-new", scratch_destination()),
-            move_call("pane-c", attach_destination("pane-a", "down")),
-            move_call("pane-b", attach_destination("pane-a", "right")),
-            move_call("pane-new", attach_destination("pane-c", "right")),
-            export_call(),
-            ratio_call(&[], 0.5),
-            ratio_call(&[false], 0.5),
-            ratio_call(&[true], 0.5),
-            focus_call("pane-active"),
-        ]
-    );
-}
-
-#[test]
-fn pane_created_uses_the_created_pane_when_global_focus_is_absent() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 150, 40),
-        pane("pane-new", 150, 0, 150, 40),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(split(
-            "right",
-            leaf("pane-new"),
-            leaf("pane-a"),
-        ))],
-    )
-    .with_replies("pane.swap", [swap_reply()]);
-
-    let run = run_on_pane_created(&herdr, "pane-new");
-
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            swap_call("pane-new", "pane-a"),
-            ratio_call(&[], 0.5),
-            focus_call("pane-new"),
-        ]
-    );
-}
-
-#[test]
-fn pane_created_leaves_the_first_pane_alone() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![pane("pane-new", 0, 0, 100, 40)]));
-
-    let run = run_on_pane_created(&herdr, "pane-new");
-
-    run.assert_success();
-    assert_eq!(run.requests, [snapshot_call()]);
-}
-
-#[test]
-fn pane_created_stops_before_balancing_a_zoomed_tab() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 150, 40),
-        pane("pane-new", 150, 0, 150, 40),
-    ]))
-    .with_replies(
-        "layout.export",
-        [zoomed_export_reply(split(
-            "right",
-            leaf("pane-a"),
-            leaf("pane-new"),
-        ))],
-    );
-
-    let run = run_on_pane_created(&herdr, "pane-new");
-
-    assert_eq!(
-        run.assert_failure(),
-        "pane.created reported pane-new in tab-main of workspace-1 but could not balance \
-         tab-main: tab-main is zoomed; unzoom it before balancing\n"
-    );
-    assert_eq!(run.requests, [snapshot_call(), export_call()]);
-}
-
-#[test]
-fn pane_created_fails_when_the_latest_snapshot_does_not_contain_the_pane() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![pane("pane-a", 0, 0, 100, 40)]));
-
-    let run = run_on_pane_created(&herdr, "pane-new");
-
-    assert_eq!(
-        run.assert_failure(),
-        "pane.created reported pane-new in tab-main of workspace-1 but it is missing from \
-         tab-main's latest snapshot\n"
-    );
-    assert_eq!(run.requests, [snapshot_call()]);
-}
-
-#[test]
-fn pane_created_reports_ratio_failures_with_the_event_context() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 150, 40),
-        pane("pane-new", 150, 0, 150, 40),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(split(
-            "right",
-            leaf("pane-a"),
-            leaf("pane-new"),
-        ))],
-    )
-    .with_replies(
-        "layout.set_split_ratio",
-        [Err("path is out of date".to_owned())],
-    );
-
-    let run = run_on_pane_created(&herdr, "pane-new");
-
-    assert_eq!(
-        run.assert_failure(),
-        "pane.created reported pane-new in tab-main of workspace-1 but could not balance \
-         tab-main: \
-         layout.set_split_ratio failed: path is out of date\n"
-    );
-    assert_eq!(
-        run.requests,
-        [snapshot_call(), export_call(), ratio_call(&[], 0.5)]
-    );
-}
-
-#[test]
-fn pane_created_reports_rebuild_failures_with_the_event_context() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 100, 100),
-        pane("pane-b", 100, 0, 100, 33),
-        pane("pane-c", 100, 33, 100, 33),
-        pane("pane-new", 100, 66, 100, 34),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(split(
-            "right",
-            leaf("pane-a"),
-            split(
-                "down",
-                leaf("pane-b"),
-                split("down", leaf("pane-c"), leaf("pane-new")),
-            ),
-        ))],
-    )
-    .with_replies("pane.move", [Err("pane is gone".to_owned())]);
-
-    let run = run_on_pane_created(&herdr, "pane-new");
-
-    assert_eq!(
-        run.assert_failure(),
-        "pane.created reported pane-new in tab-main of workspace-1 but could not balance \
-         tab-main: pane.move failed: pane is gone\n"
-    );
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            move_call("pane-b", new_tab_destination()),
-        ]
-    );
-}
-
-#[test]
-fn pane_created_does_not_refocus_when_balance_only_resizes() {
-    let herdr = FakeHerdr::new(focused(
-        snapshot(
-            json!([
-                layout(
-                    "tab-main",
-                    vec![
-                        pane("pane-a", 0, 0, 150, 40),
-                        pane("pane-new", 150, 0, 150, 40),
-                    ],
-                ),
-                layout("tab-active", vec![pane("pane-active", 0, 0, 100, 40)]),
-            ]),
-            json!([
-                tab("workspace-1", "tab-main", 1),
-                tab("workspace-2", "tab-active", 1),
-            ]),
-            json!([
-                workspace("workspace-1", "tab-main", 1),
-                workspace("workspace-2", "tab-active", 2),
-            ]),
-        ),
-        "workspace-2",
-        "tab-active",
-        "pane-active",
+fn pane_focused_balances_destination_then_source_after_an_external_move() {
+    let mut herdr = FakeHerdr::new(focused(
+        two_tab_snapshot(),
+        "workspace-1",
+        "tab-target",
+        "pane-c",
     ))
     .with_replies(
         "layout.export",
-        [export_reply(split(
-            "right",
-            leaf("pane-a"),
-            leaf("pane-new"),
-        ))],
+        [export_reply(split("right", leaf("pane-b"), leaf("pane-c")))],
     );
 
-    let run = run_on_pane_created(&herdr, "pane-new");
+    let destination = run_on_pane_focused(&herdr, "tab-target", "pane-c");
 
-    run.assert_success();
+    destination.assert_success();
     assert_eq!(
-        run.requests,
-        [snapshot_call(), export_call(), ratio_call(&[], 0.5)]
+        destination.requests,
+        [
+            snapshot_call(),
+            export_call_for("tab-target"),
+            ratio_call_for("tab-target", &[], 0.5),
+            snapshot_call(),
+        ]
+    );
+
+    herdr.snapshot = focused(two_tab_snapshot(), "workspace-1", "tab-source", "pane-a");
+    herdr.replies.insert(
+        "layout.export".to_owned(),
+        [export_reply(split("right", leaf("pane-a"), leaf("pane-d")))]
+            .into_iter()
+            .collect(),
+    );
+
+    let source = run_on_pane_focused(&herdr, "tab-source", "pane-a");
+
+    source.assert_success();
+    assert_eq!(
+        source.requests,
+        [
+            snapshot_call(),
+            export_call_for("tab-source"),
+            ratio_call_for("tab-source", &[], 0.5),
+            snapshot_call(),
+        ]
     );
 }
 
 #[test]
-fn new_pane_splits_and_defers_balancing_to_the_hook() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![pane("pane-a", 0, 0, 300, 40)]))
-        .with_replies("layout.export", [export_reply(leaf("pane-a"))])
-        .with_replies("pane.split", [split_reply("pane-new")]);
+fn pane_focused_balances_the_same_tab_when_its_panes_changed() {
+    // opt+n splits the focused tab without leaving it, so the entry state still
+    // names the tab; the changed pane set is what tells a new pane, or a closed
+    // one, apart from a plain focus move inside the tab.
+    for previous_pane_ids in [&["pane-a"] as &[&str], &["pane-a", "pane-b", "pane-closed"]] {
+        let herdr = FakeHerdr::new(focused(
+            tab_snapshot(vec![
+                pane("pane-a", 0, 0, 50, 40),
+                pane("pane-b", 50, 0, 50, 40),
+            ]),
+            "workspace-1",
+            "tab-main",
+            "pane-b",
+        ))
+        .with_replies(
+            "layout.export",
+            [export_reply(split("right", leaf("pane-a"), leaf("pane-b")))],
+        );
+        herdr.write_balance_state("tab-main", previous_pane_ids);
 
-    let run = run_new_pane(&herdr, "pane-a");
+        let run = run_on_pane_focused(&herdr, "tab-main", "pane-b");
+
+        run.assert_success();
+        assert_eq!(
+            run.requests,
+            [
+                snapshot_call(),
+                export_call(),
+                ratio_call(&[], 0.5),
+                snapshot_call(),
+            ]
+        );
+        assert_eq!(
+            herdr.read_balance_state(),
+            json!({"paneIds": ["pane-a", "pane-b"], "tabId": "tab-main"}),
+        );
+    }
+}
+
+#[test]
+fn pane_focused_treats_a_tab_only_state_file_as_no_entry() {
+    // State files written before the pane set was recorded name only the tab.
+    // Such a file must not pass for "already balanced with these panes".
+    let herdr = FakeHerdr::new(focused(
+        tab_snapshot(vec![
+            pane("pane-a", 0, 0, 50, 40),
+            pane("pane-b", 50, 0, 50, 40),
+        ]),
+        "workspace-1",
+        "tab-main",
+        "pane-b",
+    ))
+    .with_replies(
+        "layout.export",
+        [export_reply(split("right", leaf("pane-a"), leaf("pane-b")))],
+    );
+    fs::create_dir_all(&herdr.state_path).unwrap();
+    fs::write(
+        herdr.state_path.join("balance-focus.json"),
+        json!({"tabId": "tab-main"}).to_string(),
+    )
+    .unwrap();
+
+    let run = run_on_pane_focused(&herdr, "tab-main", "pane-b");
 
     run.assert_success();
     assert_eq!(
@@ -839,17 +680,44 @@ fn new_pane_splits_and_defers_balancing_to_the_hook() {
         [
             snapshot_call(),
             export_call(),
-            split_call("pane-a", "right"),
+            ratio_call(&[], 0.5),
+            snapshot_call(),
         ]
     );
 }
 
 #[test]
-fn new_pane_stops_before_splitting_a_zoomed_tab() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 100, 40),
-        pane("pane-b", 100, 0, 100, 40),
-    ]))
+fn pane_focused_quietly_ignores_non_entry_and_non_balanceable_events() {
+    let same_tab = FakeHerdr::new(focused(
+        two_tab_snapshot(),
+        "workspace-1",
+        "tab-source",
+        "pane-d",
+    ));
+    same_tab.write_balance_state("tab-source", &["pane-a", "pane-d"]);
+    let same_tab_run = run_on_pane_focused(&same_tab, "tab-source", "pane-d");
+    same_tab_run.assert_success();
+    assert_eq!(same_tab_run.requests, [snapshot_call()]);
+
+    let single = FakeHerdr::new(focused(
+        tab_snapshot(vec![pane("pane-a", 0, 0, 100, 40)]),
+        "workspace-1",
+        "tab-main",
+        "pane-a",
+    ));
+    let single_run = run_on_pane_focused(&single, "tab-main", "pane-a");
+    single_run.assert_success();
+    assert_eq!(single_run.requests, [snapshot_call(), snapshot_call()]);
+
+    let zoomed = FakeHerdr::new(focused(
+        tab_snapshot(vec![
+            pane("pane-a", 0, 0, 50, 40),
+            pane("pane-b", 50, 0, 50, 40),
+        ]),
+        "workspace-1",
+        "tab-main",
+        "pane-a",
+    ))
     .with_replies(
         "layout.export",
         [zoomed_export_reply(split(
@@ -858,70 +726,50 @@ fn new_pane_stops_before_splitting_a_zoomed_tab() {
             leaf("pane-b"),
         ))],
     );
-
-    let run = run_new_pane(&herdr, "pane-a");
-
+    let zoomed_run = run_on_pane_focused(&zoomed, "tab-main", "pane-a");
+    zoomed_run.assert_success();
     assert_eq!(
-        run.assert_failure(),
-        "tab-main is zoomed; unzoom it before adding a pane\n"
+        zoomed_run.requests,
+        [snapshot_call(), export_call(), snapshot_call()]
     );
-    assert_eq!(run.requests, [snapshot_call(), export_call()]);
+
+    let vanished = FakeHerdr::new(focused(
+        tab_snapshot(vec![pane("pane-live", 0, 0, 100, 40)]),
+        "workspace-1",
+        "tab-main",
+        "pane-live",
+    ));
+    vanished.write_balance_state("tab-main", &["pane-live"]);
+    let vanished_run = run_on_pane_focused(&vanished, "tab-gone", "pane-gone");
+    vanished_run.assert_success();
+    assert_eq!(vanished_run.requests, [snapshot_call()]);
 }
 
 #[test]
-fn new_pane_stops_before_splitting_when_snapshot_and_layout_disagree() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 100, 40),
-        pane("pane-b", 100, 0, 100, 40),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(split(
-            "right",
-            leaf("pane-a"),
-            leaf("pane-late"),
-        ))],
-    );
-
-    let run = run_new_pane(&herdr, "pane-a");
-
-    assert_eq!(
-        run.assert_failure(),
-        "tab-main changed while it was being read; try again\n"
-    );
-    assert_eq!(run.requests, [snapshot_call(), export_call()]);
-}
-
-#[test]
-fn pane_exited_balances_its_background_tab_and_restores_global_focus() {
-    let snapshot = focused(
-        snapshot(
-            json!([
-                layout(
+fn pane_focused_coalesces_internal_swap_rebuild_and_scratch_focus_events() {
+    let entered = focused(tangled_snapshot(), "workspace-1", "tab-main", "pane-c");
+    let internally_focused = focused(tangled_snapshot(), "workspace-1", "tab-main", "pane-a");
+    let herdr = tangled_herdr()
+        .with_snapshot(entered.clone())
+        .with_replies(
+            "session.snapshot",
+            [
+                snapshot_reply(entered.clone()),
+                snapshot_reply(entered.clone()),
+                snapshot_reply(entered),
+                snapshot_reply(internally_focused.clone()),
+                snapshot_reply(internally_focused.clone()),
+                snapshot_reply(internally_focused.clone()),
+                snapshot_reply(internally_focused.clone()),
+                snapshot_reply(internally_focused),
+                snapshot_reply(focused(
+                    tangled_snapshot(),
+                    "workspace-1",
                     "tab-main",
-                    vec![
-                        pane("pane-a", 0, 0, 100, 100),
-                        pane("pane-b", 100, 0, 100, 33),
-                        pane("pane-c", 100, 33, 100, 33),
-                        pane("pane-d", 100, 66, 100, 34),
-                    ],
-                ),
-                layout("tab-active", vec![pane("pane-active", 0, 0, 100, 40)]),
-            ]),
-            json!([
-                tab("workspace-1", "tab-main", 1),
-                tab("workspace-2", "tab-active", 1),
-            ]),
-            json!([
-                workspace("workspace-1", "tab-main", 1),
-                workspace("workspace-2", "tab-active", 2),
-            ]),
-        ),
-        "workspace-2",
-        "tab-active",
-        "pane-active",
-    );
-    let herdr = FakeHerdr::new(snapshot)
+                    "pane-c",
+                )),
+            ],
+        )
         .with_replies(
             "layout.export",
             [
@@ -937,392 +785,265 @@ fn pane_exited_balances_its_background_tab_and_restores_global_focus() {
                 export_reply(grid(&[&["pane-a", "pane-b"], &["pane-c", "pane-d"]])),
             ],
         )
-        .with_replies("pane.move", [new_tab_reply("tab-scratch"), move_reply()]);
+        .with_replies(
+            "pane.move",
+            [
+                new_tab_reply_with_source(
+                    "tab-scratch",
+                    focused_layout(
+                        "tab-main",
+                        "pane-c",
+                        vec![
+                            pane("pane-a", 0, 0, 100, 100),
+                            pane("pane-c", 100, 0, 100, 50),
+                            pane("pane-d", 100, 50, 100, 50),
+                        ],
+                    ),
+                ),
+                successful_move_reply(
+                    ("pane-c", "workspace-1", "tab-main"),
+                    ("pane-c", "workspace-1", "tab-scratch"),
+                    (
+                        Some(focused_layout(
+                            "tab-main",
+                            "pane-a",
+                            vec![
+                                pane("pane-a", 0, 0, 100, 100),
+                                pane("pane-d", 100, 0, 100, 100),
+                            ],
+                        )),
+                        focused_layout(
+                            "tab-scratch",
+                            "pane-b",
+                            vec![
+                                pane("pane-b", 0, 0, 100, 100),
+                                pane("pane-c", 100, 0, 100, 100),
+                            ],
+                        ),
+                    ),
+                ),
+                successful_move_reply(
+                    ("pane-d", "workspace-1", "tab-main"),
+                    ("pane-d", "workspace-1", "tab-scratch"),
+                    (
+                        Some(focused_layout(
+                            "tab-main",
+                            "pane-a",
+                            vec![pane("pane-a", 0, 0, 100, 100)],
+                        )),
+                        focused_layout(
+                            "tab-scratch",
+                            "pane-b",
+                            vec![
+                                pane("pane-b", 0, 0, 100, 100),
+                                pane("pane-c", 100, 0, 100, 100),
+                                pane("pane-d", 200, 0, 100, 100),
+                            ],
+                        ),
+                    ),
+                ),
+                move_reply(),
+            ],
+        );
 
-    let run = run_on_pane_exited(&herdr, "pane-exited");
+    let first = run_on_pane_focused(&herdr, "tab-main", "pane-a");
+    first.assert_success();
+    assert!(first.requests.iter().any(|call| call.method == "pane.move"));
+    assert!(first.requests.contains(&focus_call("pane-c")));
+    assert_eq!(first.requests.last(), Some(&snapshot_call()));
 
-    run.assert_success();
+    for (tab_id, pane_id) in [
+        ("tab-main", "pane-b"),
+        ("tab-scratch", "pane-c"),
+        ("tab-main", "pane-a"),
+    ] {
+        let internal = run_on_pane_focused(&herdr, tab_id, pane_id);
+        internal.assert_success();
+        assert_eq!(internal.requests, [snapshot_call()]);
+    }
+
+    let before_swap = focused(
+        tab_snapshot(vec![
+            pane("pane-a", 0, 0, 50, 40),
+            pane("pane-b", 50, 0, 50, 40),
+        ]),
+        "workspace-1",
+        "tab-main",
+        "pane-a",
+    );
+    let internal_swap_focus = focused(
+        tab_snapshot(vec![
+            pane("pane-a", 0, 0, 50, 40),
+            pane("pane-b", 50, 0, 50, 40),
+        ]),
+        "workspace-1",
+        "tab-main",
+        "pane-b",
+    );
+    let swap_herdr = FakeHerdr::new(before_swap.clone())
+        .with_replies(
+            "session.snapshot",
+            [
+                snapshot_reply(before_swap.clone()),
+                snapshot_reply(before_swap.clone()),
+                snapshot_reply(internal_swap_focus),
+                snapshot_reply(before_swap),
+            ],
+        )
+        .with_replies(
+            "layout.export",
+            [export_reply(split("right", leaf("pane-b"), leaf("pane-a")))],
+        )
+        .with_replies("pane.swap", [swap_reply()]);
+    swap_herdr.write_balance_state("tab-before", &[]);
+
+    let swapped = run_on_pane_focused(&swap_herdr, "tab-main", "pane-a");
+
+    swapped.assert_success();
+    assert!(swapped.requests.contains(&swap_call("pane-b", "pane-a")));
+    assert!(swapped.requests.contains(&focus_call("pane-a")));
+    let internal = run_on_pane_focused(&swap_herdr, "tab-main", "pane-b");
+    internal.assert_success();
+    assert_eq!(internal.requests, [snapshot_call()]);
+
+    let main = focused(tangled_snapshot(), "workspace-1", "tab-main", "pane-a");
+    let other = focused(
+        snapshot(
+            json!([
+                layout(
+                    "tab-main",
+                    vec![
+                        pane("pane-a", 0, 0, 100, 100),
+                        pane("pane-c", 100, 0, 100, 50),
+                        pane("pane-d", 100, 50, 100, 50),
+                    ],
+                ),
+                layout("tab-other", vec![pane("pane-other", 0, 0, 100, 100)]),
+            ]),
+            json!([
+                tab("workspace-1", "tab-main", 1),
+                tab("workspace-1", "tab-other", 2),
+            ]),
+            json!([workspace("workspace-1", "tab-other", 1)]),
+        ),
+        "workspace-1",
+        "tab-other",
+        "pane-other",
+    );
+    let interrupted = tangled_herdr()
+        .with_snapshot(main.clone())
+        .with_replies(
+            "session.snapshot",
+            [
+                snapshot_reply(main.clone()),
+                snapshot_reply(main),
+                snapshot_reply(other.clone()),
+                snapshot_reply(other.clone()),
+                snapshot_reply(other),
+            ],
+        )
+        .with_replies(
+            "pane.move",
+            [
+                new_tab_reply_with_source(
+                    "tab-scratch",
+                    focused_layout(
+                        "tab-main",
+                        "pane-a",
+                        vec![
+                            pane("pane-a", 0, 0, 100, 100),
+                            pane("pane-c", 100, 0, 100, 50),
+                            pane("pane-d", 100, 50, 100, 50),
+                        ],
+                    ),
+                ),
+                Err("recovery move failed".to_owned()),
+            ],
+        );
+
+    let interrupted_run = run_on_pane_focused(&interrupted, "tab-main", "pane-a");
+
     assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            move_call("pane-b", new_tab_destination()),
-            move_call("pane-c", scratch_destination()),
-            move_call("pane-d", scratch_destination()),
-            move_call("pane-c", attach_destination("pane-a", "down")),
-            move_call("pane-b", attach_destination("pane-a", "right")),
-            move_call("pane-d", attach_destination("pane-c", "right")),
-            export_call(),
-            ratio_call(&[], 0.5),
-            ratio_call(&[false], 0.5),
-            ratio_call(&[true], 0.5),
-            focus_call("pane-active"),
-        ]
+        interrupted_run.assert_failure(),
+        "could not automatically balance tab-main: could not rebuild tab-main: focus left \
+         tab-main while it was being balanced; pane-b left in tab-scratch\n"
+    );
+    assert!(
+        interrupted_run
+            .requests
+            .contains(&move_call("pane-b", attach_destination("pane-a", "right")))
     );
 }
 
 #[test]
-fn pane_exited_uses_the_first_target_pane_when_global_focus_is_absent() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 150, 40),
-        pane("pane-b", 150, 0, 150, 40),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(split("right", leaf("pane-b"), leaf("pane-a")))],
-    )
-    .with_replies("pane.swap", [swap_reply()]);
+fn pane_focused_latest_user_tab_wins_during_success_and_failure() {
+    for (first_ratio, should_fail) in [
+        (Ok(json!({"type": "layout_split_ratio_set"})), false),
+        (Err("first tab changed".to_owned()), true),
+    ] {
+        let first = focused(two_tab_snapshot(), "workspace-1", "tab-source", "pane-a");
+        let latest = focused(two_tab_snapshot(), "workspace-1", "tab-target", "pane-c");
+        let mut herdr = FakeHerdr::new(first.clone())
+            .with_replies(
+                "session.snapshot",
+                [
+                    snapshot_reply(first),
+                    snapshot_reply(latest.clone()),
+                    snapshot_reply(latest),
+                ],
+            )
+            .with_replies(
+                "layout.export",
+                [
+                    export_reply(split("right", leaf("pane-a"), leaf("pane-d"))),
+                    export_reply(split("right", leaf("pane-b"), leaf("pane-c"))),
+                ],
+            )
+            .with_replies(
+                "layout.set_split_ratio",
+                [first_ratio, Ok(json!({"type": "layout_split_ratio_set"}))],
+            );
+        herdr.write_balance_state("tab-before", &[]);
 
-    let run = run_on_pane_exited(&herdr, "pane-exited");
+        let run = run_on_pane_focused(&herdr, "tab-source", "pane-a");
 
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            swap_call("pane-b", "pane-a"),
-            ratio_call(&[], 0.5),
-            focus_call("pane-a"),
-        ]
-    );
-}
+        if should_fail {
+            assert!(run.assert_failure().contains("first tab changed"));
+        } else {
+            run.assert_success();
+        }
+        assert!(
+            run.requests
+                .contains(&ratio_call_for("tab-target", &[], 0.5))
+        );
+        assert!(!run.requests.iter().any(|call| call.method == "pane.focus"));
 
-#[test]
-fn pane_exited_ignores_a_tab_that_disappeared_with_its_last_pane() {
-    let herdr = FakeHerdr::new(snapshot(
-        json!([layout(
-            "tab-active",
-            vec![pane("pane-active", 0, 0, 100, 40)]
-        )]),
-        json!([tab("workspace-1", "tab-active", 1)]),
-        json!([workspace("workspace-1", "tab-active", 1)]),
-    ));
+        if should_fail {
+            herdr.snapshot = focused(two_tab_snapshot(), "workspace-1", "tab-source", "pane-a");
+            herdr.replies.remove("session.snapshot");
+            herdr.replies.insert(
+                "layout.export".to_owned(),
+                [export_reply(split("right", leaf("pane-a"), leaf("pane-d")))]
+                    .into_iter()
+                    .collect(),
+            );
+            herdr.replies.insert(
+                "layout.set_split_ratio".to_owned(),
+                [Ok(json!({"type": "layout_split_ratio_set"}))]
+                    .into_iter()
+                    .collect(),
+            );
 
-    let run = run_on_pane_exited(&herdr, "pane-exited");
+            let retry = run_on_pane_focused(&herdr, "tab-source", "pane-a");
 
-    run.assert_success();
-    assert_eq!(run.requests, [snapshot_call()]);
-}
-
-#[test]
-fn pane_exited_ignores_a_tab_with_one_surviving_pane() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![pane("pane-a", 0, 0, 100, 40)]));
-
-    let run = run_on_pane_exited(&herdr, "pane-exited");
-
-    run.assert_success();
-    assert_eq!(run.requests, [snapshot_call()]);
-}
-
-#[test]
-fn pane_exited_fails_before_balance_when_the_exited_pane_remains_in_the_snapshot() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 100, 40),
-        pane("pane-exited", 100, 0, 100, 40),
-    ]));
-
-    let run = run_on_pane_exited(&herdr, "pane-exited");
-
-    assert_eq!(
-        run.assert_failure(),
-        "pane-exited is still present in tab-main's latest snapshot\n"
-    );
-    assert_eq!(run.requests, [snapshot_call()]);
-}
-
-#[test]
-fn pane_exited_stops_before_balancing_a_zoomed_tab() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 150, 40),
-        pane("pane-b", 150, 0, 150, 40),
-    ]))
-    .with_replies(
-        "layout.export",
-        [zoomed_export_reply(split(
-            "right",
-            leaf("pane-a"),
-            leaf("pane-b"),
-        ))],
-    );
-
-    let run = run_on_pane_exited(&herdr, "pane-exited");
-
-    assert_eq!(
-        run.assert_failure(),
-        "tab-main is zoomed; unzoom it before balancing\n"
-    );
-    assert_eq!(run.requests, [snapshot_call(), export_call()]);
-}
-
-#[test]
-fn balance_prefers_complete_rows_for_four_wide_panes() {
-    // c* = sqrt(4 * 300 / (80 * 2)) is about 2.74. Of the surrounding integers,
-    // only 2 divides the pane count, so a complete 2-by-2 grid wins over 3 and 1.
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 150, 40),
-        pane("pane-b", 150, 0, 150, 40),
-        pane("pane-c", 0, 40, 150, 40),
-        pane("pane-d", 150, 40, 150, 40),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(grid(&[
-            &["pane-a", "pane-b"],
-            &["pane-c", "pane-d"],
-        ]))],
-    );
-
-    let run = run_balance(&herdr, "pane-a");
-
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            ratio_call(&[], 0.5),
-            ratio_call(&[false], 0.5),
-            ratio_call(&[true], 0.5),
-        ]
-    );
-}
-
-#[test]
-fn balance_uses_one_complete_row_when_three_wide_panes_fit() {
-    // c* = sqrt(3 * 300 / (80 * 2)) is about 2.37. Three divides the pane count,
-    // while 2 does not, so the allowed wider side of the bracket makes one row.
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 100, 80),
-        pane("pane-b", 100, 0, 100, 80),
-        pane("pane-c", 200, 0, 100, 80),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(grid(&[&["pane-a", "pane-b", "pane-c"]]))],
-    );
-
-    let run = run_balance(&herdr, "pane-a");
-
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            ratio_call(&[], 2.0 / 3.0),
-            ratio_call(&[false], 0.5),
-        ]
-    );
-}
-
-#[test]
-fn balance_keeps_the_rounded_columns_when_neither_neighbor_divides_five() {
-    // c* is about 3.06, but neither 3 nor 4 divides 5, so ordinary rounding keeps
-    // the intentionally short final row.
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 100, 40),
-        pane("pane-b", 100, 0, 100, 40),
-        pane("pane-c", 200, 0, 100, 40),
-        pane("pane-d", 0, 40, 150, 40),
-        pane("pane-e", 150, 40, 150, 40),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(grid(&[
-            &["pane-a", "pane-b", "pane-c"],
-            &["pane-d", "pane-e"],
-        ]))],
-    );
-
-    let run = run_balance(&herdr, "pane-a");
-
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            ratio_call(&[], 0.5),
-            ratio_call(&[false], 2.0 / 3.0),
-            ratio_call(&[false, false], 0.5),
-            ratio_call(&[true], 0.5),
-        ]
-    );
-}
-
-#[test]
-fn balance_prefers_more_columns_when_both_divisors_are_equally_close() {
-    // 12 panes across 49x24 cells put c* exactly at 3.5. Both surrounding integers
-    // divide 12, so the tie is resolved towards 4 columns rather than 3.
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 12, 8),
-        pane("pane-b", 12, 0, 12, 8),
-        pane("pane-c", 24, 0, 12, 8),
-        pane("pane-d", 36, 0, 13, 8),
-        pane("pane-e", 0, 8, 12, 8),
-        pane("pane-f", 12, 8, 12, 8),
-        pane("pane-g", 24, 8, 12, 8),
-        pane("pane-h", 36, 8, 13, 8),
-        pane("pane-i", 0, 16, 12, 8),
-        pane("pane-j", 12, 16, 12, 8),
-        pane("pane-k", 24, 16, 12, 8),
-        pane("pane-l", 36, 16, 13, 8),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(grid(&[
-            &["pane-a", "pane-b", "pane-c", "pane-d"],
-            &["pane-e", "pane-f", "pane-g", "pane-h"],
-            &["pane-i", "pane-j", "pane-k", "pane-l"],
-        ]))],
-    );
-
-    let run = run_balance(&herdr, "pane-a");
-
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            ratio_call(&[], 2.0 / 3.0),
-            ratio_call(&[false], 0.5),
-            ratio_call(&[false, false], 0.75),
-            ratio_call(&[false, false, false], 2.0 / 3.0),
-            ratio_call(&[false, false, false, false], 0.5),
-            ratio_call(&[false, true], 0.75),
-            ratio_call(&[false, true, false], 2.0 / 3.0),
-            ratio_call(&[false, true, false, false], 0.5),
-            ratio_call(&[true], 0.75),
-            ratio_call(&[true, false], 2.0 / 3.0),
-            ratio_call(&[true, false, false], 0.5),
-        ]
-    );
-}
-
-#[test]
-fn balance_uses_the_closer_divisor_when_both_neighbors_divide_the_panes() {
-    // 12 panes across 41x24 cells put c* at about 3.20. Both 3 and 4 divide 12,
-    // so the closer lower divisor makes four complete rows of three.
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 13, 6),
-        pane("pane-b", 13, 0, 14, 6),
-        pane("pane-c", 27, 0, 14, 6),
-        pane("pane-d", 0, 6, 13, 6),
-        pane("pane-e", 13, 6, 14, 6),
-        pane("pane-f", 27, 6, 14, 6),
-        pane("pane-g", 0, 12, 13, 6),
-        pane("pane-h", 13, 12, 14, 6),
-        pane("pane-i", 27, 12, 14, 6),
-        pane("pane-j", 0, 18, 13, 6),
-        pane("pane-k", 13, 18, 14, 6),
-        pane("pane-l", 27, 18, 14, 6),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(grid(&[
-            &["pane-a", "pane-b", "pane-c"],
-            &["pane-d", "pane-e", "pane-f"],
-            &["pane-g", "pane-h", "pane-i"],
-            &["pane-j", "pane-k", "pane-l"],
-        ]))],
-    );
-
-    let run = run_balance(&herdr, "pane-a");
-
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            ratio_call(&[], 0.75),
-            ratio_call(&[false], 2.0 / 3.0),
-            ratio_call(&[false, false], 0.5),
-            ratio_call(&[false, false, false], 2.0 / 3.0),
-            ratio_call(&[false, false, false, false], 0.5),
-            ratio_call(&[false, false, true], 2.0 / 3.0),
-            ratio_call(&[false, false, true, false], 0.5),
-            ratio_call(&[false, true], 2.0 / 3.0),
-            ratio_call(&[false, true, false], 0.5),
-            ratio_call(&[true], 2.0 / 3.0),
-            ratio_call(&[true, false], 0.5),
-        ]
-    );
-}
-
-#[test]
-fn balance_stacks_a_tall_tab_into_a_single_column() {
-    // 4 panes across 50x200 cells put c* below 1, so the lower clamp makes 1 column.
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 50, 50),
-        pane("pane-b", 0, 50, 50, 50),
-        pane("pane-c", 0, 100, 50, 50),
-        pane("pane-d", 0, 150, 50, 50),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(split(
-            "down",
-            split("down", leaf("pane-a"), leaf("pane-b")),
-            split("down", leaf("pane-c"), leaf("pane-d")),
-        ))],
-    );
-
-    let run = run_balance(&herdr, "pane-a");
-
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            ratio_call(&[], 0.5),
-            ratio_call(&[false], 0.5),
-            ratio_call(&[true], 0.5),
-        ]
-    );
-}
-
-#[test]
-fn balance_lets_the_last_row_hold_fewer_panes() {
-    // 5 panes across 160x100 cells: 2 columns, so the rows hold 2, 2 and 1.
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 80, 33),
-        pane("pane-b", 80, 0, 80, 33),
-        pane("pane-c", 0, 33, 80, 33),
-        pane("pane-d", 80, 33, 80, 33),
-        pane("pane-e", 0, 66, 160, 34),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(split(
-            "down",
-            split(
-                "down",
-                split("right", leaf("pane-a"), leaf("pane-b")),
-                split("right", leaf("pane-c"), leaf("pane-d")),
-            ),
-            leaf("pane-e"),
-        ))],
-    );
-
-    let run = run_balance(&herdr, "pane-a");
-
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            ratio_call(&[], 2.0 / 3.0),
-            ratio_call(&[false], 0.5),
-            ratio_call(&[false, false], 0.5),
-            ratio_call(&[false, true], 0.5),
-        ]
-    );
+            retry.assert_success();
+            assert!(
+                retry
+                    .requests
+                    .contains(&ratio_call_for("tab-source", &[], 0.5))
+            );
+        }
+    }
 }
 
 #[test]
@@ -1997,6 +1718,12 @@ fn every_manifest_entrypoint_is_a_command_the_plugin_accepts() {
     let manifest = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/herdr-plugin.toml"))
         .expect("the manifest sits next to Cargo.toml");
     let commands = manifest_commands(&manifest);
+    let events: Vec<_> = manifest
+        .lines()
+        .filter_map(|line| line.strip_prefix("on = "))
+        .collect();
+
+    assert_eq!(events, ["\"pane.focused\""]);
 
     assert!(
         !commands.is_empty(),
@@ -2067,6 +1794,11 @@ impl FakeHerdr {
         self
     }
 
+    fn with_snapshot(mut self, snapshot: Value) -> Self {
+        self.snapshot = snapshot;
+        self
+    }
+
     fn run(&self, workspace_id: &str, tab_id: &str, pane_id: &str, args: &[&str]) -> Run {
         let socket_path = self.directory.join("herdr.sock");
         let stop = Arc::new(AtomicBool::new(false));
@@ -2115,6 +1847,20 @@ impl FakeHerdr {
     fn write_state(&self, state: &str) {
         fs::create_dir_all(&self.state_path).unwrap();
         fs::write(self.state_path.join("focus-anchor.json"), state).unwrap();
+    }
+
+    fn write_balance_state(&self, tab_id: &str, pane_ids: &[&str]) {
+        fs::create_dir_all(&self.state_path).unwrap();
+        fs::write(
+            self.state_path.join("balance-focus.json"),
+            json!({"paneIds": pane_ids, "tabId": tab_id}).to_string(),
+        )
+        .unwrap();
+    }
+
+    fn read_balance_state(&self) -> Value {
+        let state = fs::read_to_string(self.state_path.join("balance-focus.json")).unwrap();
+        serde_json::from_str(&state).unwrap()
     }
 }
 
@@ -2186,13 +1932,43 @@ fn default_reply(call: &Call, snapshot: &Value) -> Reply {
     Ok(match call.method.as_str() {
         "session.snapshot" => json!({"type": "session_snapshot", "snapshot": snapshot}),
         "pane.focus" => json!({"pane": {"pane_id": call.params["pane_id"]}}),
-        "pane.move" => json!({"type": "pane_move", "move_result": {"changed": true}}),
+        "pane.move" => default_move_reply(call, snapshot),
         "layout.set_split_ratio" => json!({"type": "layout_split_ratio_set"}),
         "workspace.move" => json!({
             "type": "workspace_list",
             "workspaces": snapshot["workspaces"].clone(),
         }),
         method => panic!("unscripted socket method: {method}"),
+    })
+}
+
+fn default_move_reply(call: &Call, snapshot: &Value) -> Value {
+    let pane_id = call.params["pane_id"].as_str().unwrap();
+    let tab_id = call.params["destination"]["tab_id"]
+        .as_str()
+        .unwrap_or("tab-moved");
+    let workspace_id = snapshot["tabs"]
+        .as_array()
+        .and_then(|tabs| tabs.iter().find(|tab| tab["tab_id"] == tab_id))
+        .and_then(|tab| tab["workspace_id"].as_str())
+        .or_else(|| call.params["destination"]["workspace_id"].as_str())
+        .unwrap_or("workspace-1");
+    json!({
+        "type": "pane_move",
+        "move_result": {
+            "changed": true,
+            "previous_pane_id": pane_id,
+            "previous_workspace_id": "workspace-source",
+            "previous_tab_id": "tab-source",
+            "pane": {
+                "pane_id": pane_id,
+                "workspace_id": workspace_id,
+                "tab_id": tab_id,
+            },
+            "source_layout": null,
+            "target_layout": layout(tab_id, vec![pane(pane_id, 0, 0, 100, 100)]),
+            "focused_pane_id": pane_id,
+        },
     })
 }
 
@@ -2278,16 +2054,8 @@ fn run_split_pane(herdr: &FakeHerdr, pane_id: &str) -> Run {
     herdr.run("workspace-1", "tab-main", pane_id, &["split-pane"])
 }
 
-fn run_new_pane(herdr: &FakeHerdr, pane_id: &str) -> Run {
-    herdr.run("workspace-1", "tab-main", pane_id, &["new-pane"])
-}
-
-fn run_on_pane_created(herdr: &FakeHerdr, pane_id: &str) -> Run {
-    herdr.run("workspace-1", "tab-main", pane_id, &["on-pane-created"])
-}
-
-fn run_on_pane_exited(herdr: &FakeHerdr, pane_id: &str) -> Run {
-    herdr.run("workspace-1", "tab-main", pane_id, &["on-pane-exited"])
+fn run_on_pane_focused(herdr: &FakeHerdr, tab_id: &str, pane_id: &str) -> Run {
+    herdr.run("workspace-1", tab_id, pane_id, &["on-pane-focused"])
 }
 
 fn run_balance(herdr: &FakeHerdr, pane_id: &str) -> Run {
@@ -2330,6 +2098,30 @@ fn tab_snapshot(panes: Vec<Value>) -> Value {
     )
 }
 
+fn two_tab_snapshot() -> Value {
+    snapshot(
+        json!([
+            layout(
+                "tab-source",
+                vec![pane("pane-a", 0, 0, 50, 40), pane("pane-d", 50, 0, 50, 40),],
+            ),
+            layout(
+                "tab-target",
+                vec![pane("pane-b", 0, 0, 50, 40), pane("pane-c", 50, 0, 50, 40),],
+            ),
+        ]),
+        json!([
+            tab("workspace-1", "tab-source", 1),
+            tab("workspace-1", "tab-target", 2),
+        ]),
+        json!([workspace("workspace-1", "tab-source", 1)]),
+    )
+}
+
+fn snapshot_reply(snapshot: Value) -> Reply {
+    Ok(json!({"type": "session_snapshot", "snapshot": snapshot}))
+}
+
 fn export_reply(root: Value) -> Reply {
     layout_export_reply(root, false)
 }
@@ -2360,13 +2152,66 @@ fn swap_reply() -> Reply {
 }
 
 fn move_reply() -> Reply {
-    Ok(json!({"type": "pane_move", "move_result": {"changed": true}}))
+    successful_move_reply(
+        ("pane-moved", "workspace-1", "tab-main"),
+        ("pane-moved", "workspace-1", "tab-main"),
+        (
+            None,
+            layout("tab-main", vec![pane("pane-moved", 0, 0, 100, 100)]),
+        ),
+    )
+}
+
+fn successful_move_reply(
+    previous: (&str, &str, &str),
+    moved: (&str, &str, &str),
+    layouts: (Option<Value>, Value),
+) -> Reply {
+    let (previous_pane_id, previous_workspace_id, previous_tab_id) = previous;
+    let (pane_id, workspace_id, tab_id) = moved;
+    let (source_layout, target_layout) = layouts;
+    Ok(json!({
+        "type": "pane_move",
+        "move_result": {
+            "changed": true,
+            "previous_pane_id": previous_pane_id,
+            "previous_workspace_id": previous_workspace_id,
+            "previous_tab_id": previous_tab_id,
+            "pane": {
+                "pane_id": pane_id,
+                "workspace_id": workspace_id,
+                "tab_id": tab_id,
+            },
+            "source_layout": source_layout,
+            "target_layout": target_layout,
+            "focused_pane_id": pane_id,
+        },
+    }))
 }
 
 fn new_tab_reply(tab_id: &str) -> Reply {
+    new_tab_reply_with_source(tab_id, Value::Null)
+}
+
+fn new_tab_reply_with_source(tab_id: &str, source_layout: Value) -> Reply {
     Ok(json!({
         "type": "pane_move",
-        "move_result": {"changed": true, "created_tab": {"tab_id": tab_id}},
+        "move_result": {
+            "changed": true,
+            "created_tab": {"tab_id": tab_id},
+            "focused_pane_id": "pane-moved",
+            "pane": {
+                "pane_id": "pane-moved",
+                "tab_id": tab_id,
+                "workspace_id": "workspace-1",
+            },
+            "previous_workspace_id": "workspace-1",
+            "source_layout": source_layout,
+            "target_layout": layout(
+                tab_id,
+                vec![pane("pane-moved", 0, 0, 100, 100)],
+            ),
+        },
     }))
 }
 
@@ -2375,7 +2220,22 @@ fn new_tab_reply(tab_id: &str) -> Reply {
 fn no_op_move_reply(reason: &str) -> Reply {
     Ok(json!({
         "type": "pane_move",
-        "move_result": {"changed": false, "reason": reason},
+        "move_result": {
+            "changed": false,
+            "focused_pane_id": "pane-moved",
+            "pane": {
+                "pane_id": "pane-moved",
+                "tab_id": "tab-main",
+                "workspace_id": "workspace-1",
+            },
+            "previous_workspace_id": "workspace-1",
+            "reason": reason,
+            "source_layout": null,
+            "target_layout": layout(
+                "tab-main",
+                vec![pane("pane-moved", 0, 0, 100, 100)],
+            ),
+        },
     }))
 }
 
@@ -2411,7 +2271,11 @@ fn split_run(pane_ids: &[&str]) -> Value {
 }
 
 fn export_call() -> Call {
-    call("layout.export", json!({"tab_id": "tab-main"}))
+    export_call_for("tab-main")
+}
+
+fn export_call_for(tab_id: &str) -> Call {
+    call("layout.export", json!({"tab_id": tab_id}))
 }
 
 fn split_call(target_pane_id: &str, direction: &str) -> Call {
@@ -2460,9 +2324,13 @@ fn swap_call(source_pane_id: &str, target_pane_id: &str) -> Call {
 }
 
 fn ratio_call(path: &[bool], ratio: f64) -> Call {
+    ratio_call_for("tab-main", path, ratio)
+}
+
+fn ratio_call_for(tab_id: &str, path: &[bool], ratio: f64) -> Call {
     call(
         "layout.set_split_ratio",
-        json!({"tab_id": "tab-main", "path": path, "ratio": ratio}),
+        json!({"tab_id": tab_id, "path": path, "ratio": ratio}),
     )
 }
 
@@ -2481,6 +2349,10 @@ fn focused(mut snapshot: Value, workspace_id: &str, tab_id: &str, pane_id: &str)
 
 fn layout(tab_id: &str, panes: Vec<Value>) -> Value {
     json!({"panes": panes, "tab_id": tab_id})
+}
+
+fn focused_layout(tab_id: &str, focused_pane_id: &str, panes: Vec<Value>) -> Value {
+    json!({"focused_pane_id": focused_pane_id, "panes": panes, "tab_id": tab_id})
 }
 
 fn pane(id: &str, x: u16, y: u16, width: u16, height: u16) -> Value {

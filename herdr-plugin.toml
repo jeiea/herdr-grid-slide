@@ -70,13 +70,13 @@ command = ["./bin/herdr-move-pane", "focus", "right"]
 
 [[actions]]
 id = "split-pane"
-title = "Split pane and balance the tab"
+title = "Split pane"
 contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "split-pane"]
 
 [[actions]]
 id = "new-pane"
-title = "Create pane and balance the tab"
+title = "Create pane"
 contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "new-pane"]
 
@@ -87,9 +87,5 @@ contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "balance"]
 
 [[events]]
-on = "pane.created"
-command = ["./bin/herdr-move-pane", "on-pane-created"]
-
-[[events]]
-on = "pane.exited"
-command = ["./bin/herdr-move-pane", "on-pane-exited"]
+on = "pane.focused"
+command = ["./bin/herdr-move-pane", "on-pane-focused"]

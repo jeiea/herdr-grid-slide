@@ -1,92 +1,52 @@
 # herdr-move-pane
 
-Move the current Herdr pane cyclically to the adjacent tab or workspace, reorder the workspaces
-themselves, navigate panes in visual order across container boundaries, add a pane without squeezing
-the ones around it, or lay a whole tab out as an even grid. A moved pane splits the destination on
-the right at a 50:50 ratio and keeps focus. When a pane exits, the plugin automatically balances the
-tab it belonged to, and when one is created, it automatically balances the whole tab.
+Move the current Herdr pane cyclically to the adjacent tab or workspace, reorder workspaces, navigate
+panes in visual order across container boundaries, split a pane, or lay a tab out as an even grid.
+Pane moves split the destination on the right at a 50:50 ratio and keep focus. Move, split, and new
+pane actions do not balance layouts themselves.
 
-Workspace moves target the active tab of the adjacent workspace. Tab moves stay within the current
-workspace. Both use the visible `number` order and wrap at either end.
+Workspace moves target the active tab of the adjacent workspace. Tab moves stay in the current
+workspace. Both use visible `number` order and wrap at either end. `move-workspace` instead moves
+the active workspace itself through that order. Directional focus preserves its cross-axis position
+where possible and wraps across tabs or workspaces at an edge.
 
-`move-workspace` reorders the workspaces themselves instead of moving a pane: it shifts the active
-workspace one position through the visible `number` order, wrapping from either end to the other.
-Herdr keeps the active and selected workspaces by identity, so focus stays on the moved workspace.
-With a single workspace the action succeeds without side effects.
+`split-pane` and `new-pane` are aliases. They split the focused pane at 50:50 along the direction
+the tab already grows in. For mixed or single-pane layouts, a pane wider than twice its height splits
+right; all others split down.
 
-Directional focus preserves the cross-axis position across panes where possible. At a horizontal
-edge it wraps to the previous or next tab; at a vertical edge it wraps to the previous or next
-workspace's active tab. The preferred position carries across boundaries, with reading order used to
-break ties.
+`pane.focused` is the only automatic balance entry point. The plugin records the latest entered tab
+and its pane set in `HERDR_PLUGIN_STATE_DIR/balance-focus.json`; another pane focus in that same tab
+with the same panes does nothing, while a focus that arrives with a new or closed pane -- such as the
+one `new-pane` creates -- balances the tab again. This makes an externally moved pane balance its
+destination when entered and leaves the source to be balanced when the user later enters it. Hook
+processes share a file lock, read the latest session snapshot after acquiring it, and keep following
+newer tab focus until the observed tab is settled.
+Internal focus events from swaps, scratch-tab moves, and rebuilding therefore collapse into the same
+run instead of starting recursive work. With no state yet, the first observed focus is treated as a
+tab entry because Herdr does not provide the previous tab.
 
-`split-pane` and `new-pane` are compatible action names for the same operation. They split the
-focused pane at 50:50 along the direction the tab already grows in, and fall back to the shape of
-the focused pane when the tab mixes directions or holds a single pane: wider than twice its height
-splits to the right, anything else splits downwards, which accounts for terminal cells being about
-twice as tall as they are wide. The actions stop after requesting the split; all creation
-post-processing belongs to the `pane.created` hook.
+Automatic balance quietly skips a missing, single-pane, or zoomed tab. It records an attempted tab
+before changing its layout, so a failure does not loop on ordinary same-tab pane focus; leaving and
+re-entering the tab retries it. On failure the automatic path never sends `pane.focus`. After a
+successful focus-changing operation it restores the entry pane only when the latest snapshot still
+matches the focus that operation itself was expected to produce. Before each swap or scratch move it
+also verifies that its target tab is still focused. After every attempt it reads the latest focus
+again, so a user tab entered during an earlier successful or failed balance becomes the next and
+final tab balanced.
 
-The `pane.created` hook is the single entry point for balancing after a pane is created through the
-Herdr CLI, API, an agent, or either plugin action. It reads the latest session snapshot, verifies the
-event pane is present in the event tab, and, for a multi-pane tab, requires the snapshot and exported
-layout to contain the same panes before balancing the whole tab with the same grid algorithm as
-`balance`. Swaps and rebuilds restore the snapshot's global focused pane, preserving the result of
-`--focus` or `--no-focus`; if the snapshot has no global focus, the new pane is used instead. A first
-pane has no layout work to do, so its creation succeeds after the snapshot read without exporting or
-changing the layout.
+The explicit `balance` action keeps its existing contract. It lays the tab out as an even two-axis
+grid in reading order, swaps panes when the shape already matches, and otherwise rebuilds through a
+scratch tab. It rejects zoomed tabs and invalid or changing layouts, tries to recover staged panes,
+and restores its starting pane after focus-changing work or failure. Re-running it on a settled grid
+only reapplies target ratios.
 
-The `pane.exited` hook balances the exited pane's tab from the event context, even when another tab
-is active. It restores the session's global focus after balancing; if the snapshot has no global
-focus, it uses the first surviving pane in the target tab's reading order. If the last pane removed
-the tab, or only one pane survives, the hook does nothing successfully.
-
-`balance` lays the whole tab out as an even two-axis grid, keeping the panes in reading order. The
-ideal column count is `sqrt(panes × width / (2 × height))`, the same cell correction as above. If its
-floor or ceiling divides the pane count, the closest such divisor is used (the larger on a tie);
-otherwise the ideal is rounded normally, so the last row may come up short. The result stays clamped
-between one and the pane count. Each run does the least the tab needs: one that is already the right
-grid is only resized, one whose panes sit in the wrong cells is put right with swaps, and only a tab
-shaped differently is rebuilt. Rebuilding parks every pane but the first in a scratch tab and brings
-them back one at a time, because Herdr declines to move a pane within its own tab; the terminals carry
-across intact and the emptied scratch tab disappears with the last move. Whether it finishes or
-fails, `balance` puts the focus back on the pane it started from, best effort. Running `balance` again
-on its own result only reapplies the target ratios.
-
-The pane creation actions, `balance`, and automatic event balances stop with an error on a zoomed
-tab rather than unzooming it, so a failure part-way through cannot leave the tab zoomed out. Herdr
-clamps split ratios to [0.1, 0.9], so a run of more than ten same-direction slots cannot be made
-exactly even; rebuilt grids join panes as balanced halves and stay clear of the clamp. A rebuild
-that fails part-way tries to bring the parked panes back beside the first one, preferring to keep
-every terminal over restoring the previous arrangement, and names any pane it could not bring back
-along with the tab holding it. Rebuilding also moves panes through another tab, so the layout visibly
-churns while it runs.
-
-The focus position is stored in `HERDR_PLUGIN_STATE_DIR/focus-anchor.json`. Focus actions do not use
-a lock file. Each successful action writes a temporary file and atomically replaces the state, which
-prevents partially written JSON but does not order overlapping processes. Either process may replace
-the anchor after the other focuses, and inputs that read the same snapshot may choose the same target.
-Each action uses the snapshot's live focused pane instead of its inherited pane context, reducing
-stale-context errors without promising exact ordering for simultaneous inputs. `split-pane`,
-`new-pane`, and `balance` take no lock either; the actions check the session snapshot against the
-exported layout before requesting a split, while the asynchronous creation hook reads a new snapshot
-before balancing. A rebuild exports the tab once more before resizing, which catches a tab that
-changed underneath it without serialising simultaneous inputs.
-
-Herdr runs event hooks asynchronously and may run consecutive creation hooks in parallel. The
-creation hook does not retry, debounce, or serialize them, so overlapping layout changes can fail
-the same consistency checks as a manual balance. Herdr can also lose events during session restore
-or when its global concurrent-command limit is exceeded. Hook failures do not change the action or
-CLI result that created the pane; inspect `herdr plugin log list` for the transient error and run the
-`balance` action to recover the tab manually. A missing event pane, snapshot or export failure,
-rejected ratio, or failed rebuild is reported with the `pane.created` workspace, tab, and pane
-context.
-
-Herdr handles the exit before servicing the hook's socket request, so the hook reads one fresh
-snapshot with the exited pane already removed. It uses the event's `HERDR_WORKSPACE_ID`,
-`HERDR_TAB_ID`, and `HERDR_PANE_ID`, not the active tab context. There is no delay or retry: if that
-single snapshot still contains the exited pane, the hook fails explicitly instead of balancing a
-stale layout. Overlapping exits or other layout changes can therefore fail the same consistency
-checks as a manual balance; the next exit is a separate run, not a retry of the failed one.
+Herdr events contain no origin or sequence. The lock orders hook processes, not the focus events that
+started them, and a user focus can occur in the narrow interval between the plugin's latest-focus
+check and a Herdr swap or move request. That request may itself change focus before the newer hook can
+be distinguished; a user choosing exactly the same pane as the expected internal focus is likewise
+indistinguishable. These exact races cannot be solved strictly without Herdr metadata. The covered
+representative order is a newer user tab focus becoming visible after an earlier balance succeeds or
+fails: no old `pane.focus` is issued, the newer tab wins, and that tab is balanced.
 
 Actions use `HERDR_SOCKET_PATH` directly for both the session snapshot and the resulting pane
 operation, avoiding an additional Herdr CLI process per key press.
