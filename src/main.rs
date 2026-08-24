@@ -104,7 +104,6 @@ struct Workspace {
 #[derive(Deserialize)]
 struct Tab {
     tab_id: String,
-    number: f64,
     workspace_id: String,
 }
 
@@ -995,18 +994,23 @@ fn resolve_move_target_tab<'a>(
             .map(|item| item.active_tab_id.as_str())
         }
         Scope::Tab => {
-            let mut items: Vec<_> = snapshot
-                .tabs
-                .iter()
-                .filter(|tab| tab.workspace_id == context.workspace_id)
-                .collect();
-            items.sort_by(|left, right| left.number.total_cmp(&right.number));
+            let items = tabs_in_display_order(snapshot, context.workspace_id);
             adjacent(&items, context.tab_id, direction, |item| {
                 item.tab_id.as_str()
             })
             .map(|item| item.tab_id.as_str())
         }
     }
+}
+
+/// Herdr tab reorder changes the snapshot array order while keeping public tab
+/// numbers stable, so the array is the displayed order rather than the numbers.
+fn tabs_in_display_order<'a>(snapshot: &'a Snapshot, workspace_id: &str) -> Vec<&'a Tab> {
+    snapshot
+        .tabs
+        .iter()
+        .filter(|tab| tab.workspace_id == workspace_id)
+        .collect()
 }
 
 fn workspaces_in_visible_order(snapshot: &Snapshot) -> Vec<&Workspace> {
@@ -1163,12 +1167,7 @@ fn resolve_boundary_tab<'a>(
     snapshot: &'a Snapshot,
 ) -> Result<&'a str> {
     if matches!(direction, PaneDirection::Left | PaneDirection::Right) {
-        let mut items: Vec<_> = snapshot
-            .tabs
-            .iter()
-            .filter(|tab| tab.workspace_id == context.workspace_id)
-            .collect();
-        items.sort_by(|left, right| left.number.total_cmp(&right.number));
+        let items = tabs_in_display_order(snapshot, context.workspace_id);
         let movement = if matches!(direction, PaneDirection::Right) {
             MoveDirection::Next
         } else {

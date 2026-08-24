@@ -5,10 +5,11 @@ panes in visual order across container boundaries, split a pane, or lay a tab ou
 Pane moves split the destination on the right at a 50:50 ratio and keep focus. Move, split, and new
 pane actions do not balance layouts themselves.
 
-Workspace moves target the active tab of the adjacent workspace. Tab moves stay in the current
-workspace. Both use visible `number` order and wrap at either end. `move-workspace` instead moves
-the active workspace itself through that order. Directional focus preserves its cross-axis position
-where possible and wraps across tabs or workspaces at an edge.
+Workspace-scoped pane moves target the active tab of the adjacent workspace and use visible
+workspace `number` order. Tab-scoped pane moves stay in the current workspace and follow displayed
+tab order. Both wrap at either end. `move-workspace` instead moves the active workspace itself
+through workspace `number` order. Directional focus preserves its cross-axis position where possible
+and wraps across tabs or workspaces at an edge.
 
 `split-pane` and `new-pane` are aliases. They split the focused pane at 50:50 along the direction
 the tab already grows in. For mixed or single-pane layouts, a pane wider than twice its height splits

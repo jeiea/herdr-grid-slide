@@ -19,7 +19,7 @@ type Reply = Result<Value, String>;
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
-fn moves_wrap_by_visible_workspace_and_tab_number() {
+fn moves_wrap_by_visible_workspace_number_and_tab_order() {
     let herdr = FakeHerdr::new(standard_snapshot());
 
     for (scope, direction, workspace_id, tab_id, target_tab_id) in [
@@ -36,6 +36,24 @@ fn moves_wrap_by_visible_workspace_and_tab_number() {
             [
                 call("session.snapshot", json!({})),
                 call("pane.move", move_to_tab("pane-current", target_tab_id)),
+            ]
+        );
+    }
+}
+
+#[test]
+fn moves_follow_reordered_tab_snapshot_order() {
+    let herdr = FakeHerdr::new(reordered_tab_snapshot());
+
+    for (direction, target_tab_id) in [("next", "tab-b"), ("previous", "tab-c")] {
+        let run = herdr.run("workspace-1", "tab-a", "pane-a", &["tab", direction]);
+
+        run.assert_success();
+        assert_eq!(
+            run.requests,
+            [
+                snapshot_call(),
+                call("pane.move", move_to_tab("pane-a", target_tab_id)),
             ]
         );
     }
@@ -214,6 +232,18 @@ fn focus_wraps_across_tabs_and_workspaces_in_visual_order() {
         let herdr = FakeHerdr::new(snapshot(layouts, standard_tabs(), standard_workspaces()));
 
         let run = herdr.run(workspace_id, tab_id, "pane-current", &["focus", direction]);
+
+        run.assert_success();
+        assert_eq!(run.requests, [snapshot_call(), focus_call(expected)]);
+    }
+}
+
+#[test]
+fn focus_wraps_across_reordered_tabs_in_snapshot_order() {
+    let herdr = FakeHerdr::new(reordered_tab_snapshot());
+
+    for (direction, expected) in [("left", "pane-c"), ("right", "pane-b")] {
+        let run = herdr.run("workspace-1", "tab-a", "pane-a", &["focus", direction]);
 
         run.assert_success();
         assert_eq!(run.requests, [snapshot_call(), focus_call(expected)]);
@@ -1993,6 +2023,22 @@ fn anchor_snapshot() -> Value {
 
 fn standard_snapshot() -> Value {
     snapshot(standard_layouts(), standard_tabs(), standard_workspaces())
+}
+
+fn reordered_tab_snapshot() -> Value {
+    snapshot(
+        json!([
+            layout("tab-a", vec![pane("pane-a", 0, 0, 100, 80)]),
+            layout("tab-b", vec![pane("pane-b", 0, 0, 100, 80)]),
+            layout("tab-c", vec![pane("pane-c", 0, 0, 100, 80)]),
+        ]),
+        json!([
+            tab("workspace-1", "tab-a", 72),
+            tab("workspace-1", "tab-b", 82),
+            tab("workspace-1", "tab-c", 80),
+        ]),
+        json!([workspace("workspace-1", "tab-a", 1)]),
+    )
 }
 
 fn standard_tabs() -> Value {
