@@ -302,7 +302,12 @@ fn run() -> Result<()> {
     let command = parse_arguments(env::args().skip(1))?;
     let context = read_context(matches!(
         command,
-        Command::Focus(_) | Command::OnPaneFocused
+        Command::Focus(_)
+            | Command::Move {
+                scope: Scope::Tab,
+                ..
+            }
+            | Command::OnPaneFocused
     ))?;
     let mut client = SocketClient::new(&context.socket_path);
     match command {
@@ -310,7 +315,7 @@ fn run() -> Result<()> {
         Command::Move { direction, scope } => move_pane(&context, direction, scope, &mut client),
         Command::MoveWorkspace(direction) => move_workspace(&context, direction, &mut client),
         Command::CreatePane => create_pane(&context, &mut client),
-        Command::OnPaneFocused => balance_focused_pane(&context, &mut client),
+        Command::OnPaneFocused => balance_focused_pane(&context, &mut client, None),
         Command::Balance => balance(&context, &mut client),
     }
 }
@@ -383,24 +388,28 @@ fn move_pane(
 ) -> Result<()> {
     let snapshot = read_snapshot(client)?;
     let navigation = navigation_context(context, &snapshot);
-    let target_tab_id = resolve_move_target_tab(&navigation, direction, scope, &snapshot)?;
+    let pane_id = navigation.pane_id.to_owned();
+    let target_tab_id =
+        resolve_move_target_tab(&navigation, direction, scope, &snapshot)?.to_owned();
     if target_tab_id == navigation.tab_id {
         return Ok(());
     }
-    client.request(
-        "pane.move",
+    let moved = request_pane_move(
+        client,
+        &pane_id,
         json!({
-            "pane_id": navigation.pane_id,
-            "destination": {
-                "type": "tab",
-                "tab_id": target_tab_id,
-                "split": "right",
-                "ratio": 0.5,
-            },
-            "focus": true,
+            "type": "tab",
+            "tab_id": target_tab_id,
+            "split": "right",
+            "ratio": 0.5,
         }),
+        true,
     )?;
-    Ok(())
+    if !moved.changed || !matches!(scope, Scope::Tab) {
+        return Ok(());
+    }
+    balance_focused_pane(context, client, Some(&target_tab_id))
+        .map_err(|error| format!("pane moved, but automatic balance failed: {error}"))
 }
 
 /// Moves the active workspace itself one step through the visible number order,
@@ -512,7 +521,11 @@ fn balance(context: &Context, client: &mut SocketClient) -> Result<()> {
     )
 }
 
-fn balance_focused_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
+fn balance_focused_pane(
+    context: &Context,
+    client: &mut SocketClient,
+    mut expected_destination_tab_id: Option<&str>,
+) -> Result<()> {
     let state_dir = context
         .state_dir
         .as_ref()
@@ -542,11 +555,13 @@ fn balance_focused_pane(context: &Context, client: &mut SocketClient) -> Result<
         // A focus inside the settled tab is not a tab entry, but a new or closed
         // pane changes the pane set and does warrant a balance.
         let pane_ids = sorted_pane_ids(snapshot_layout);
-        if previous
-            .as_ref()
-            .is_some_and(|(previous_tab, previous_panes)| {
-                previous_tab == tab_id && *previous_panes == pane_ids
-            })
+        let force_balance = expected_destination_tab_id.take() == Some(tab_id);
+        if !force_balance
+            && previous
+                .as_ref()
+                .is_some_and(|(previous_tab, previous_panes)| {
+                    previous_tab == tab_id && *previous_panes == pane_ids
+                })
         {
             break;
         }
@@ -857,18 +872,27 @@ fn move_pane_to(
     pane_id: &str,
     destination: Value,
 ) -> Result<MoveOutcome> {
-    let result = client.request(
-        "pane.move",
-        json!({"pane_id": pane_id, "destination": destination, "focus": false}),
-    )?;
-    let moved = serde_json::from_value::<PaneMoveResult>(result)
-        .map_err(|_| "herdr api pane.move returned an invalid response".to_owned())?
-        .move_result;
+    let moved = request_pane_move(client, pane_id, destination, false)?;
     if !moved.changed {
         let reason = moved.reason.unwrap_or_else(|| "no reason given".to_owned());
         return Err(format!("herdr refused to move {pane_id}: {reason}"));
     }
     Ok(moved)
+}
+
+fn request_pane_move(
+    client: &mut SocketClient,
+    pane_id: &str,
+    destination: Value,
+    focus: bool,
+) -> Result<MoveOutcome> {
+    let result = client.request(
+        "pane.move",
+        json!({"pane_id": pane_id, "destination": destination, "focus": focus}),
+    )?;
+    Ok(serde_json::from_value::<PaneMoveResult>(result)
+        .map_err(|_| "herdr api pane.move returned an invalid response".to_owned())?
+        .move_result)
 }
 
 /// Cleans up after a rebuild that stopped halfway. Whatever is still parked in the

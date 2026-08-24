@@ -31,13 +31,14 @@ fn moves_wrap_by_visible_workspace_number_and_tab_order() {
         let run = herdr.run(workspace_id, tab_id, "pane-current", &[scope, direction]);
 
         run.assert_success();
-        assert_eq!(
-            run.requests,
-            [
-                call("session.snapshot", json!({})),
-                call("pane.move", move_to_tab("pane-current", target_tab_id)),
-            ]
-        );
+        let mut expected = vec![
+            call("session.snapshot", json!({})),
+            call("pane.move", move_to_tab("pane-current", target_tab_id)),
+        ];
+        if scope == "tab" {
+            expected.push(snapshot_call());
+        }
+        assert_eq!(run.requests, expected,);
     }
 }
 
@@ -54,6 +55,7 @@ fn moves_follow_reordered_tab_snapshot_order() {
             [
                 snapshot_call(),
                 call("pane.move", move_to_tab("pane-a", target_tab_id)),
+                snapshot_call(),
             ]
         );
     }
@@ -301,6 +303,14 @@ fn move_uses_live_snapshot_context_instead_of_stale_environment() {
         "tab-2-1",
         "pane-live",
     ));
+    herdr.write_balance_state(
+        "tab-2-1",
+        &[
+            "pane-2-1-bottom-right",
+            "pane-2-1-top-left",
+            "pane-2-1-top-right",
+        ],
+    );
 
     let run = herdr.run(
         "workspace-stale",
@@ -315,7 +325,197 @@ fn move_uses_live_snapshot_context_instead_of_stale_environment() {
         [
             snapshot_call(),
             call("pane.move", move_to_tab("pane-live", "tab-2-2")),
+            snapshot_call(),
         ]
+    );
+}
+
+#[test]
+fn tab_move_balances_the_destination_even_when_its_pane_set_is_cached() {
+    let before = tab_move_before_snapshot();
+    let destination = tab_move_after_snapshot("tab-destination", "pane-moving");
+    let herdr = FakeHerdr::new(before.clone())
+        .with_replies(
+            "session.snapshot",
+            [
+                snapshot_reply(before),
+                snapshot_reply(destination.clone()),
+                snapshot_reply(destination),
+            ],
+        )
+        .with_replies(
+            "layout.export",
+            [export_reply(split(
+                "right",
+                leaf("pane-destination"),
+                leaf("pane-moving"),
+            ))],
+        );
+    herdr.write_balance_state("tab-destination", &["pane-destination", "pane-moving"]);
+
+    let run = herdr.run(
+        "workspace-1",
+        "tab-source",
+        "pane-moving",
+        &["tab", "previous"],
+    );
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            call("pane.move", move_to_tab("pane-moving", "tab-destination")),
+            snapshot_call(),
+            export_call_for("tab-destination"),
+            ratio_call_for("tab-destination", &[], 0.5),
+            snapshot_call(),
+        ]
+    );
+}
+
+#[test]
+fn tab_move_skips_balance_when_herdr_does_not_move_the_pane() {
+    let before = tab_move_before_snapshot();
+    let herdr = FakeHerdr::new(before.clone())
+        .with_replies("session.snapshot", [snapshot_reply(before)])
+        .with_replies("pane.move", [no_op_move_reply("same_tab")]);
+    herdr.write_balance_state("tab-destination", &["pane-destination"]);
+
+    let run = herdr.run(
+        "workspace-1",
+        "tab-source",
+        "pane-moving",
+        &["tab", "previous"],
+    );
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            call("pane.move", move_to_tab("pane-moving", "tab-destination")),
+        ]
+    );
+    assert_eq!(
+        herdr.read_balance_state(),
+        json!({"paneIds": ["pane-destination"], "tabId": "tab-destination"})
+    );
+}
+
+#[test]
+fn tab_move_does_not_force_the_destination_after_focus_reaches_another_tab() {
+    let before = tab_move_before_snapshot();
+    let user_tab = tab_move_after_snapshot("tab-user", "pane-user-a");
+    let herdr = FakeHerdr::new(before.clone()).with_replies(
+        "session.snapshot",
+        [snapshot_reply(before), snapshot_reply(user_tab)],
+    );
+    herdr.write_balance_state("tab-user", &["pane-user-a", "pane-user-b"]);
+
+    let run = herdr.run(
+        "workspace-1",
+        "tab-source",
+        "pane-moving",
+        &["tab", "previous"],
+    );
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            call("pane.move", move_to_tab("pane-moving", "tab-destination")),
+            snapshot_call(),
+        ]
+    );
+}
+
+#[test]
+fn tab_move_consumes_the_forced_destination_then_balances_the_latest_user_tab() {
+    let before = tab_move_before_snapshot();
+    let destination = tab_move_after_snapshot("tab-destination", "pane-moving");
+    let user_tab = tab_move_after_snapshot("tab-user", "pane-user-a");
+    let herdr = FakeHerdr::new(before.clone())
+        .with_replies(
+            "session.snapshot",
+            [
+                snapshot_reply(before),
+                snapshot_reply(destination),
+                snapshot_reply(user_tab.clone()),
+                snapshot_reply(user_tab),
+            ],
+        )
+        .with_replies(
+            "layout.export",
+            [
+                export_reply(split(
+                    "right",
+                    leaf("pane-destination"),
+                    leaf("pane-moving"),
+                )),
+                export_reply(split("right", leaf("pane-user-a"), leaf("pane-user-b"))),
+            ],
+        );
+    herdr.write_balance_state("tab-destination", &["pane-destination", "pane-moving"]);
+
+    let run = herdr.run(
+        "workspace-1",
+        "tab-source",
+        "pane-moving",
+        &["tab", "previous"],
+    );
+
+    run.assert_success();
+    assert!(
+        run.requests
+            .contains(&ratio_call_for("tab-destination", &[], 0.5))
+    );
+    assert!(run.requests.contains(&ratio_call_for("tab-user", &[], 0.5)));
+}
+
+#[test]
+fn tab_move_reports_partial_success_when_automatic_balance_fails() {
+    let before = tab_move_before_snapshot();
+    let destination = tab_move_after_snapshot("tab-destination", "pane-moving");
+    let herdr = FakeHerdr::new(before.clone())
+        .with_replies(
+            "session.snapshot",
+            [
+                snapshot_reply(before),
+                snapshot_reply(destination.clone()),
+                snapshot_reply(destination),
+            ],
+        )
+        .with_replies(
+            "layout.export",
+            [export_reply(split(
+                "right",
+                leaf("pane-destination"),
+                leaf("pane-moving"),
+            ))],
+        )
+        .with_replies(
+            "layout.set_split_ratio",
+            [Err("destination resize rejected".to_owned())],
+        );
+    herdr.write_balance_state("tab-destination", &["pane-destination", "pane-moving"]);
+
+    let run = herdr.run(
+        "workspace-1",
+        "tab-source",
+        "pane-moving",
+        &["tab", "previous"],
+    );
+
+    assert_eq!(
+        run.assert_failure(),
+        "pane moved, but automatic balance failed: could not automatically balance \
+         tab-destination: layout.set_split_ratio failed: destination resize rejected\n"
+    );
+    assert!(
+        run.requests
+            .contains(&ratio_call_for("tab-destination", &[], 0.5))
     );
 }
 
@@ -2162,6 +2362,75 @@ fn two_tab_snapshot() -> Value {
         ]),
         json!([workspace("workspace-1", "tab-source", 1)]),
     )
+}
+
+fn tab_move_before_snapshot() -> Value {
+    focused(
+        snapshot(
+            json!([
+                layout(
+                    "tab-destination",
+                    vec![pane("pane-destination", 0, 0, 100, 40)],
+                ),
+                layout(
+                    "tab-source",
+                    vec![
+                        pane("pane-source", 0, 0, 50, 40),
+                        pane("pane-moving", 50, 0, 50, 40),
+                    ],
+                ),
+                layout(
+                    "tab-user",
+                    vec![
+                        pane("pane-user-a", 0, 0, 60, 40),
+                        pane("pane-user-b", 60, 0, 40, 40),
+                    ],
+                ),
+            ]),
+            tab_move_tabs(),
+            json!([workspace("workspace-1", "tab-source", 1)]),
+        ),
+        "workspace-1",
+        "tab-source",
+        "pane-moving",
+    )
+}
+
+fn tab_move_after_snapshot(focused_tab_id: &str, focused_pane_id: &str) -> Value {
+    focused(
+        snapshot(
+            json!([
+                layout(
+                    "tab-destination",
+                    vec![
+                        pane("pane-destination", 0, 0, 70, 40),
+                        pane("pane-moving", 70, 0, 30, 40),
+                    ],
+                ),
+                layout("tab-source", vec![pane("pane-source", 0, 0, 100, 40)],),
+                layout(
+                    "tab-user",
+                    vec![
+                        pane("pane-user-a", 0, 0, 60, 40),
+                        pane("pane-user-b", 60, 0, 40, 40),
+                    ],
+                ),
+            ]),
+            tab_move_tabs(),
+            json!([workspace("workspace-1", focused_tab_id, 1)]),
+        ),
+        "workspace-1",
+        focused_tab_id,
+        focused_pane_id,
+    )
+}
+
+fn tab_move_tabs() -> Value {
+    json!([
+        tab("workspace-1", "tab-destination", 1),
+        tab("workspace-1", "tab-source", 2),
+        tab("workspace-1", "tab-user", 3),
+    ])
 }
 
 fn snapshot_reply(snapshot: Value) -> Reply {

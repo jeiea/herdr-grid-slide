@@ -3,7 +3,9 @@
 Move the current Herdr pane cyclically to the adjacent tab or workspace, reorder workspaces, navigate
 panes in visual order across container boundaries, split a pane, or lay a tab out as an even grid.
 Pane moves split the destination on the right at a 50:50 ratio and keep focus. Move, split, and new
-pane actions do not balance layouts themselves.
+pane actions do not balance layouts themselves, except that a successful tab-scoped move starts
+automatic balance before returning. It balances the destination if that tab is still focused after
+the balance lock is acquired.
 
 Workspace-scoped pane moves target the active tab of the adjacent workspace and use visible
 workspace `number` order. Tab-scoped pane moves stay in the current workspace and follow displayed
@@ -15,16 +17,22 @@ and wraps across tabs or workspaces at an edge.
 the tab already grows in. For mixed or single-pane layouts, a pane wider than twice its height splits
 right; all others split down.
 
-`pane.focused` is the only automatic balance entry point. The plugin records the latest entered tab
-and its pane set in `HERDR_PLUGIN_STATE_DIR/balance-focus.json`; another pane focus in that same tab
-with the same panes does nothing, while a focus that arrives with a new or closed pane -- such as the
-one `new-pane` creates -- balances the tab again. This makes an externally moved pane balance its
-destination when entered and leaves the source to be balanced when the user later enters it. Hook
-processes share a file lock, read the latest session snapshot after acquiring it, and keep following
-newer tab focus until the observed tab is settled.
+`pane.focused` and successful tab-scoped moves enter automatic balance. The plugin records the latest
+entered tab and its pane set in `HERDR_PLUGIN_STATE_DIR/balance-focus.json`; another pane focus in
+that same tab with the same panes does nothing, while a focus that arrives with a new or closed pane
+-- such as the one `new-pane` creates -- balances the tab again. A tab-scoped move ignores a matching
+cached pane set once when the first snapshot after locking still focuses its expected destination.
+If that snapshot focuses another tab, the expected destination is discarded and the usual latest
+focus and cache rules apply. This makes an externally moved pane balance its destination when entered
+and leaves the source to be balanced when the user later enters it. Hook processes share a file lock,
+read the latest session snapshot after acquiring it, and keep following newer tab focus until the
+observed tab is settled.
 Internal focus events from swaps, scratch-tab moves, and rebuilding therefore collapse into the same
 run instead of starting recursive work. With no state yet, the first observed focus is treated as a
 tab entry because Herdr does not provide the previous tab.
+
+If a tab-scoped pane move succeeds but automatic balance fails, the pane remains moved and the action
+fails with `pane moved, but automatic balance failed: ...`.
 
 Automatic balance quietly skips a missing, single-pane, or zoomed tab. It records an attempted tab
 before changing its layout, so a failure does not loop on ordinary same-tab pane focus; leaving and
