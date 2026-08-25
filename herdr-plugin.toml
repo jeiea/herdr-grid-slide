@@ -33,6 +33,18 @@ contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "tab", "previous"]
 
 [[actions]]
+id = "to-new-tab"
+title = "Move pane to new tab"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "to-new-tab"]
+
+[[actions]]
+id = "to-new-workspace"
+title = "Move pane to new workspace"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "to-new-workspace"]
+
+[[actions]]
 id = "move-workspace-next"
 title = "Move workspace itself to next position"
 contexts = ["workspace"]

@@ -1,17 +1,30 @@
 # herdr-move-pane
 
-Move the current Herdr pane cyclically to the adjacent tab or workspace, reorder workspaces, navigate
-panes in visual order across container boundaries, split a pane, or lay a tab out as an even grid.
-Pane moves split the destination on the right at a 50:50 ratio and keep focus. Move, split, and new
-pane actions do not balance layouts themselves, except that a successful tab-scoped move starts
-automatic balance before returning. It balances the destination if that tab is still focused after
-the balance lock is acquired.
+Move the current Herdr pane cyclically to the adjacent tab or workspace, move it to a new tab or
+workspace, reorder workspaces, navigate panes in visual order across container boundaries, split a
+pane, or lay a tab out as an even grid. Pane moves split an existing destination on the right at a
+50:50 ratio and keep focus. Move, split, and new pane actions do not balance layouts themselves,
+except that a successful tab-scoped move starts automatic balance before returning. It balances the
+destination if that tab is still focused after the balance lock is acquired.
 
 Workspace-scoped pane moves target the active tab of the adjacent workspace and use visible
 workspace `number` order. Tab-scoped pane moves stay in the current workspace and follow displayed
 tab order. Both wrap at either end. `move-workspace` instead moves the active workspace itself
 through workspace `number` order. Directional focus preserves its cross-axis position where possible
 and wraps across tabs or workspaces at an edge.
+
+`to-new-tab` moves the focused pane into a focused new tab in the same workspace and places that tab
+immediately after its source. If the source was already the last tab, the new tab is already in the
+right place and no reorder request is needed. Moving the source tab's only pane would close that tab,
+so the action ignores that case without changing the session. If Herdr declines the pane move, the
+action likewise stops without a reorder request.
+
+`to-new-workspace` moves the focused pane into a focused new workspace and places that workspace
+immediately after its source in visible `number` order. If the source was already the last
+workspace, the new workspace is already in the right place and no reorder request is needed. Moving
+the source workspace's only pane would close that workspace, so the action ignores that case without
+changing the session. Moving a tab's only pane is allowed when another tab remains in the source
+workspace. If Herdr declines the pane move, the action likewise stops without a reorder request.
 
 `split-pane` and `new-pane` are aliases. They split the focused pane at 50:50 along the direction
 the tab already grows in. For mixed or single-pane layouts, a pane wider than twice its height splits
@@ -33,6 +46,14 @@ tab entry because Herdr does not provide the previous tab.
 
 If a tab-scoped pane move succeeds but automatic balance fails, the pane remains moved and the action
 fails with `pane moved, but automatic balance failed: ...`.
+
+If `to-new-tab` moves the pane but Herdr omits the created tab ID, or the subsequent tab reorder
+fails, the action fails with an error that says the pane move already completed. The pane remains in
+the new tab; the tab may remain at the end of its workspace.
+
+If `to-new-workspace` moves the pane but Herdr omits the created workspace ID, or the subsequent
+workspace reorder fails, the action fails with an error that says the pane move already completed.
+The pane remains in the new workspace; that workspace may remain at the end of the session.
 
 Automatic balance quietly skips a missing, single-pane, or zoomed tab. It records an attempted tab
 before changing its layout, so a failure does not loop on ordinary same-tab pane focus; leaving and
@@ -118,6 +139,8 @@ The plugin exposes these actions:
 - `jeiea.move-pane.to-previous-workspace`
 - `jeiea.move-pane.to-next-tab`
 - `jeiea.move-pane.to-previous-tab`
+- `jeiea.move-pane.to-new-tab`
+- `jeiea.move-pane.to-new-workspace`
 - `jeiea.move-pane.move-workspace-next`
 - `jeiea.move-pane.move-workspace-previous`
 - `jeiea.move-pane.focus-left`

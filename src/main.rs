@@ -47,6 +47,8 @@ enum Command {
         direction: MoveDirection,
         scope: Scope,
     },
+    MoveToNewTab,
+    MoveToNewWorkspace,
     MoveWorkspace(MoveDirection),
     Focus(PaneDirection),
     CreatePane,
@@ -168,6 +170,7 @@ struct PaneMoveResult {
 struct MoveOutcome {
     changed: bool,
     created_tab: Option<TabRef>,
+    created_workspace: Option<WorkspaceRef>,
     reason: Option<String>,
     #[serde(default)]
     source_layout: Option<TabLayout>,
@@ -176,6 +179,11 @@ struct MoveOutcome {
 #[derive(Deserialize)]
 struct TabRef {
     tab_id: String,
+}
+
+#[derive(Deserialize)]
+struct WorkspaceRef {
+    workspace_id: String,
 }
 
 impl SplitDirection {
@@ -313,6 +321,8 @@ fn run() -> Result<()> {
     match command {
         Command::Focus(direction) => focus_with_anchor(&context, direction, &mut client),
         Command::Move { direction, scope } => move_pane(&context, direction, scope, &mut client),
+        Command::MoveToNewTab => move_pane_to_new_tab(&context, &mut client),
+        Command::MoveToNewWorkspace => move_pane_to_new_workspace(&context, &mut client),
         Command::MoveWorkspace(direction) => move_workspace(&context, direction, &mut client),
         Command::CreatePane => create_pane(&context, &mut client),
         Command::OnPaneFocused => balance_focused_pane(&context, &mut client, None),
@@ -325,6 +335,8 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
     match args.as_slice() {
         [operation] => match operation.as_str() {
             "split-pane" | "new-pane" => Ok(Command::CreatePane),
+            "to-new-tab" => Ok(Command::MoveToNewTab),
+            "to-new-workspace" => Ok(Command::MoveToNewWorkspace),
             "on-pane-focused" => Ok(Command::OnPaneFocused),
             "balance" => Ok(Command::Balance),
             _ => Err(usage()),
@@ -365,7 +377,7 @@ fn parse_move_direction(direction: &str) -> Result<MoveDirection> {
 }
 
 fn usage() -> String {
-    "usage: herdr-move-pane <workspace|tab> <next|previous> | move-workspace <next|previous> | focus <direction> | split-pane | new-pane | balance | on-pane-focused".into()
+    "usage: herdr-move-pane <workspace|tab> <next|previous> | move-workspace <next|previous> | focus <direction> | to-new-tab | to-new-workspace | split-pane | new-pane | balance | on-pane-focused".into()
 }
 
 fn read_context(needs_state_dir: bool) -> Result<Context> {
@@ -412,6 +424,87 @@ fn move_pane(
         .map_err(|error| format!("pane moved, but automatic balance failed: {error}"))
 }
 
+fn move_pane_to_new_tab(context: &Context, client: &mut SocketClient) -> Result<()> {
+    let snapshot = read_snapshot(client)?;
+    let navigation = navigation_context(context, &snapshot);
+    if find_layout(&snapshot, navigation.tab_id)?.panes.len() <= 1 {
+        return Ok(());
+    }
+    let tabs = tabs_in_display_order(&snapshot, navigation.workspace_id);
+    let source = current_position(&tabs, navigation.tab_id, |tab| tab.tab_id.as_str())?;
+    let moved = request_pane_move(
+        client,
+        navigation.pane_id,
+        json!({"type": "new_tab", "workspace_id": navigation.workspace_id}),
+        true,
+    )?;
+    if !moved.changed {
+        return Ok(());
+    }
+    if source + 1 == tabs.len() {
+        return Ok(());
+    }
+    let created_tab = moved.created_tab.ok_or(
+        "pane moved to a new tab, but herdr api pane.move response is missing the created tab id",
+    )?;
+    client
+        .request(
+            "tab.move",
+            json!({"tab_id": created_tab.tab_id, "insert_index": source + 1}),
+        )
+        .map_err(|error| {
+            format!(
+                "pane moved to a new tab, but positioning {} after {} failed: {error}",
+                created_tab.tab_id, navigation.tab_id
+            )
+        })?;
+    Ok(())
+}
+
+fn move_pane_to_new_workspace(context: &Context, client: &mut SocketClient) -> Result<()> {
+    let snapshot = read_snapshot(client)?;
+    let navigation = navigation_context(context, &snapshot);
+    let source_tab_count = snapshot
+        .tabs
+        .iter()
+        .filter(|tab| tab.workspace_id == navigation.workspace_id)
+        .count();
+    if source_tab_count == 1 && find_layout(&snapshot, navigation.tab_id)?.panes.len() <= 1 {
+        return Ok(());
+    }
+    let workspaces = workspaces_in_visible_order(&snapshot);
+    let source = current_position(&workspaces, navigation.workspace_id, |workspace| {
+        workspace.workspace_id.as_str()
+    })?;
+    let moved = request_pane_move(
+        client,
+        navigation.pane_id,
+        json!({"type": "new_workspace"}),
+        true,
+    )?;
+    if !moved.changed || source + 1 == workspaces.len() {
+        return Ok(());
+    }
+    let created_workspace = moved.created_workspace.ok_or(
+        "pane moved to a new workspace, but herdr api pane.move response is missing the created workspace id",
+    )?;
+    client
+        .request(
+            "workspace.move",
+            json!({
+                "workspace_id": created_workspace.workspace_id,
+                "insert_index": source + 1,
+            }),
+        )
+        .map_err(|error| {
+            format!(
+                "pane moved to a new workspace, but positioning {} after {} failed: {error}",
+                created_workspace.workspace_id, navigation.workspace_id
+            )
+        })?;
+    Ok(())
+}
+
 /// Moves the active workspace itself one step through the visible number order,
 /// wrapping at either end. herdr's `workspace.move` takes the insertion slot counted
 /// before the workspace is removed: stepping forward inserts two slots ahead, and
@@ -427,15 +520,9 @@ fn move_workspace(
     if items.len() < 2 {
         return Ok(());
     }
-    let source = items
-        .iter()
-        .position(|workspace| workspace.workspace_id == navigation.workspace_id)
-        .ok_or_else(|| {
-            format!(
-                "current item not found in herdr snapshot: {}",
-                navigation.workspace_id
-            )
-        })?;
+    let source = current_position(&items, navigation.workspace_id, |workspace| {
+        workspace.workspace_id.as_str()
+    })?;
     let insert_index = match direction {
         MoveDirection::Next if source == items.len() - 1 => 0,
         MoveDirection::Next => source + 2,
@@ -1043,16 +1130,24 @@ fn workspaces_in_visible_order(snapshot: &Snapshot) -> Vec<&Workspace> {
     items
 }
 
+fn current_position<T>(
+    items: &[&T],
+    current_id: &str,
+    get_id: impl Fn(&T) -> &str,
+) -> Result<usize> {
+    items
+        .iter()
+        .position(|item| get_id(item) == current_id)
+        .ok_or_else(|| format!("current item not found in herdr snapshot: {current_id}"))
+}
+
 fn adjacent<'a, T>(
     items: &[&'a T],
     current_id: &str,
     direction: MoveDirection,
     get_id: impl Fn(&T) -> &str,
 ) -> Result<&'a T> {
-    let current = items
-        .iter()
-        .position(|item| get_id(item) == current_id)
-        .ok_or_else(|| format!("current item not found in herdr snapshot: {current_id}"))?;
+    let current = current_position(items, current_id, get_id)?;
     let target = match direction {
         MoveDirection::Next => (current + 1) % items.len(),
         MoveDirection::Previous => (current + items.len() - 1) % items.len(),
