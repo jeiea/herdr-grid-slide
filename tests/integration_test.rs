@@ -359,6 +359,144 @@ fn creates_a_focused_default_shell_tab_immediately_after_the_current_tab() {
 }
 
 #[test]
+fn creates_a_focused_default_shell_workspace_immediately_after_the_current_workspace() {
+    // Snapshot array order differs from visible workspace number order, so the
+    // source's visible insertion slot is 2 rather than its array slot 1.
+    let herdr = FakeHerdr::new(focused(
+        snapshot(
+            json!([
+                layout("tab-source", vec![pane("pane-live", 0, 0, 100, 100)]),
+                layout("tab-first", vec![pane("pane-first", 0, 0, 100, 100)]),
+                layout("tab-last", vec![pane("pane-last", 0, 0, 100, 100)]),
+            ]),
+            json!([
+                tab("workspace-source", "tab-source", 1),
+                tab("workspace-first", "tab-first", 1),
+                tab("workspace-last", "tab-last", 1),
+            ]),
+            json!([
+                workspace("workspace-source", "tab-source", 2),
+                workspace("workspace-first", "tab-first", 1),
+                workspace("workspace-last", "tab-last", 3),
+            ]),
+        ),
+        "workspace-source",
+        "tab-source",
+        "pane-live",
+    ))
+    .with_replies(
+        "workspace.create",
+        [workspace_created_reply("workspace-created")],
+    );
+
+    let run = herdr.run(
+        "workspace-stale",
+        "tab-stale",
+        "pane-stale",
+        &["new-workspace"],
+    );
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            create_workspace_call(),
+            workspace_move_call("workspace-created", 2),
+        ]
+    );
+}
+
+#[test]
+fn leaves_a_created_workspace_at_the_end_when_the_current_workspace_was_last() {
+    let herdr = FakeHerdr::new(focused(
+        standard_snapshot(),
+        "workspace-3",
+        "tab-3-1",
+        "pane-3-1-top-left",
+    ))
+    .with_replies(
+        "workspace.create",
+        [workspace_created_reply("workspace-created")],
+    );
+
+    let run = herdr.run(
+        "workspace-3",
+        "tab-3-1",
+        "pane-3-1-top-left",
+        &["new-workspace"],
+    );
+
+    run.assert_success();
+    assert_eq!(run.requests, [snapshot_call(), create_workspace_call()]);
+}
+
+#[test]
+fn reports_when_a_created_workspace_response_omits_the_workspace_id() {
+    let herdr = FakeHerdr::new(focused(
+        standard_snapshot(),
+        "workspace-2",
+        "tab-2-1",
+        "pane-2-1-top-left",
+    ))
+    .with_replies(
+        "workspace.create",
+        [workspace_created_reply_without_workspace_id()],
+    );
+
+    let run = herdr.run(
+        "workspace-2",
+        "tab-2-1",
+        "pane-2-1-top-left",
+        &["new-workspace"],
+    );
+
+    assert_eq!(
+        run.assert_failure(),
+        "workspace creation completed, but herdr api workspace.create response is missing the created workspace id\n"
+    );
+    assert_eq!(run.requests, [snapshot_call(), create_workspace_call()]);
+}
+
+#[test]
+fn reports_when_the_created_workspace_could_not_be_repositioned() {
+    let herdr = FakeHerdr::new(focused(
+        standard_snapshot(),
+        "workspace-2",
+        "tab-2-1",
+        "pane-2-1-top-left",
+    ))
+    .with_replies(
+        "workspace.create",
+        [workspace_created_reply("workspace-created")],
+    )
+    .with_replies(
+        "workspace.move",
+        [Err("insert_index 2 is out of bounds".to_owned())],
+    );
+
+    let run = herdr.run(
+        "workspace-2",
+        "tab-2-1",
+        "pane-2-1-top-left",
+        &["new-workspace"],
+    );
+
+    assert_eq!(
+        run.assert_failure(),
+        "workspace creation completed, but positioning workspace-created after workspace-2 failed: workspace.move failed: insert_index 2 is out of bounds\n"
+    );
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            create_workspace_call(),
+            workspace_move_call("workspace-created", 2),
+        ]
+    );
+}
+
+#[test]
 fn leaves_a_created_tab_at_the_end_when_the_current_tab_was_last() {
     let herdr = FakeHerdr::new(focused(
         standard_snapshot(),
@@ -2526,6 +2664,20 @@ fn manifest_exposes_the_create_tab_to_the_right_action() {
 }
 
 #[test]
+fn manifest_exposes_the_create_workspace_after_current_action() {
+    let manifest = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/herdr-plugin.toml"))
+        .expect("the manifest sits next to Cargo.toml");
+
+    assert!(manifest.contains(
+        r#"[[actions]]
+id = "new-workspace"
+title = "Create workspace after current"
+contexts = ["workspace"]
+command = ["./bin/herdr-move-pane", "new-workspace"]"#
+    ));
+}
+
+#[test]
 fn every_manifest_entrypoint_is_a_command_the_plugin_accepts() {
     // The manifest is what herdr actually runs, so a typo there only shows up when an
     // action or event fires. Running the real binary on each binding catches it here.
@@ -3134,6 +3286,24 @@ fn new_workspace_reply(workspace_id: &str) -> Reply {
     }))
 }
 
+fn workspace_created_reply(workspace_id: &str) -> Reply {
+    Ok(json!({
+        "type": "workspace_created",
+        "workspace": {"workspace_id": workspace_id},
+        "tab": {"tab_id": "tab-created"},
+        "root_pane": {"pane_id": "pane-created"},
+    }))
+}
+
+fn workspace_created_reply_without_workspace_id() -> Reply {
+    Ok(json!({
+        "type": "workspace_created",
+        "workspace": {},
+        "tab": {"tab_id": "tab-created"},
+        "root_pane": {"pane_id": "pane-created"},
+    }))
+}
+
 fn new_tab_reply_with_source(tab_id: &str, source_layout: Value) -> Reply {
     Ok(json!({
         "type": "pane_move",
@@ -3321,6 +3491,10 @@ fn workspace_move_call(workspace_id: &str, insert_index: usize) -> Call {
         "workspace.move",
         json!({"workspace_id": workspace_id, "insert_index": insert_index}),
     )
+}
+
+fn create_workspace_call() -> Call {
+    call("workspace.create", json!({"focus": true}))
 }
 
 fn tab_move_call(tab_id: &str, insert_index: usize) -> Call {

@@ -48,6 +48,7 @@ enum Command {
         scope: Scope,
     },
     CreateTab,
+    CreateWorkspace,
     MoveToNewTab,
     MoveToNewWorkspace,
     MoveWorkspace(MoveDirection),
@@ -158,6 +159,11 @@ struct PaneInfoResult {
 #[derive(Deserialize)]
 struct TabCreateResult {
     tab: Option<TabRef>,
+}
+
+#[derive(Deserialize)]
+struct WorkspaceCreateResult {
+    workspace: Option<WorkspaceRef>,
 }
 
 #[derive(Deserialize)]
@@ -328,6 +334,7 @@ fn run() -> Result<()> {
         Command::Focus(direction) => focus_with_anchor(&context, direction, &mut client),
         Command::Move { direction, scope } => move_pane(&context, direction, scope, &mut client),
         Command::CreateTab => create_tab_to_right(&context, &mut client),
+        Command::CreateWorkspace => create_workspace_after_current(&context, &mut client),
         Command::MoveToNewTab => move_pane_to_new_tab(&context, &mut client),
         Command::MoveToNewWorkspace => move_pane_to_new_workspace(&context, &mut client),
         Command::MoveWorkspace(direction) => move_workspace(&context, direction, &mut client),
@@ -342,6 +349,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
     match args.as_slice() {
         [operation] => match operation.as_str() {
             "new-tab" => Ok(Command::CreateTab),
+            "new-workspace" => Ok(Command::CreateWorkspace),
             "split-pane" | "new-pane" => Ok(Command::CreatePane),
             "to-new-tab" => Ok(Command::MoveToNewTab),
             "to-new-workspace" => Ok(Command::MoveToNewWorkspace),
@@ -385,7 +393,7 @@ fn parse_move_direction(direction: &str) -> Result<MoveDirection> {
 }
 
 fn usage() -> String {
-    "usage: herdr-move-pane <workspace|tab> <next|previous> | move-workspace <next|previous> | focus <direction> | new-tab | to-new-tab | to-new-workspace | split-pane | new-pane | balance | on-pane-focused".into()
+    "usage: herdr-move-pane <workspace|tab> <next|previous> | move-workspace <next|previous> | focus <direction> | new-tab | new-workspace | to-new-tab | to-new-workspace | split-pane | new-pane | balance | on-pane-focused".into()
 }
 
 fn read_context(needs_state_dir: bool) -> Result<Context> {
@@ -460,6 +468,38 @@ fn create_tab_to_right(context: &Context, client: &mut SocketClient) -> Result<(
             format!(
                 "tab creation completed, but positioning {created_tab_id} after {} failed: {error}",
                 navigation.tab_id
+            )
+        })?;
+    Ok(())
+}
+
+fn create_workspace_after_current(context: &Context, client: &mut SocketClient) -> Result<()> {
+    let snapshot = read_snapshot(client)?;
+    let navigation = navigation_context(context, &snapshot);
+    let workspaces = workspaces_in_visible_order(&snapshot);
+    let source = current_position(&workspaces, navigation.workspace_id, |workspace| {
+        workspace.workspace_id.as_str()
+    })?;
+    let result = client.request("workspace.create", json!({"focus": true}))?;
+    if source + 1 == workspaces.len() {
+        return Ok(());
+    }
+    let created_workspace_id = serde_json::from_value::<WorkspaceCreateResult>(result)
+        .ok()
+        .and_then(|created| created.workspace)
+        .map(|workspace| workspace.workspace_id)
+        .ok_or(
+            "workspace creation completed, but herdr api workspace.create response is missing the created workspace id",
+        )?;
+    client
+        .request(
+            "workspace.move",
+            json!({"workspace_id": &created_workspace_id, "insert_index": source + 1}),
+        )
+        .map_err(|error| {
+            format!(
+                "workspace creation completed, but positioning {created_workspace_id} after {} failed: {error}",
+                navigation.workspace_id
             )
         })?;
     Ok(())
