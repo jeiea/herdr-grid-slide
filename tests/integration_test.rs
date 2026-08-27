@@ -330,6 +330,115 @@ fn moves_the_focused_pane_to_a_new_tab_immediately_after_its_source() {
 }
 
 #[test]
+fn creates_a_focused_default_shell_tab_immediately_after_the_current_tab() {
+    // A tab in an earlier workspace makes a session-wide index differ from the
+    // insertion slot inside workspace-2.
+    let herdr = FakeHerdr::new(focused(
+        standard_snapshot(),
+        "workspace-2",
+        "tab-2-2",
+        "pane-2-2-top-left",
+    ))
+    .with_replies(
+        "tab.create",
+        [tab_created_reply("tab-created", "pane-created")],
+    )
+    .with_replies("tab.move", [tab_move_reply()]);
+
+    let run = herdr.run("workspace-stale", "tab-stale", "pane-stale", &["new-tab"]);
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            create_tab_call("workspace-2"),
+            tab_move_call("tab-created", 2),
+        ]
+    );
+}
+
+#[test]
+fn leaves_a_created_tab_at_the_end_when_the_current_tab_was_last() {
+    let herdr = FakeHerdr::new(focused(
+        standard_snapshot(),
+        "workspace-2",
+        "tab-2-3",
+        "pane-2-3-top-left",
+    ))
+    .with_replies(
+        "tab.create",
+        [tab_created_reply("tab-created", "pane-created")],
+    );
+
+    let run = herdr.run("workspace-2", "tab-2-3", "pane-2-3-top-left", &["new-tab"]);
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [snapshot_call(), create_tab_call("workspace-2")]
+    );
+}
+
+#[test]
+fn reports_when_a_created_tab_response_omits_the_tab_id() {
+    let herdr = FakeHerdr::new(focused(
+        standard_snapshot(),
+        "workspace-2",
+        "tab-2-1",
+        "pane-2-1-top-left",
+    ))
+    .with_replies(
+        "tab.create",
+        [tab_created_reply_without_tab_id("pane-created")],
+    );
+
+    let run = herdr.run("workspace-2", "tab-2-1", "pane-2-1-top-left", &["new-tab"]);
+
+    assert_eq!(
+        run.assert_failure(),
+        "tab creation completed, but herdr api tab.create response is missing the created tab id\n"
+    );
+    assert_eq!(
+        run.requests,
+        [snapshot_call(), create_tab_call("workspace-2")]
+    );
+}
+
+#[test]
+fn reports_when_the_created_tab_could_not_be_repositioned() {
+    let herdr = FakeHerdr::new(focused(
+        standard_snapshot(),
+        "workspace-2",
+        "tab-2-1",
+        "pane-2-1-top-left",
+    ))
+    .with_replies(
+        "tab.create",
+        [tab_created_reply("tab-created", "pane-created")],
+    )
+    .with_replies(
+        "tab.move",
+        [Err("insert_index 1 is out of bounds".to_owned())],
+    );
+
+    let run = herdr.run("workspace-2", "tab-2-1", "pane-2-1-top-left", &["new-tab"]);
+
+    assert_eq!(
+        run.assert_failure(),
+        "tab creation completed, but positioning tab-created after tab-2-1 failed: tab.move failed: insert_index 1 is out of bounds\n"
+    );
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            create_tab_call("workspace-2"),
+            tab_move_call("tab-created", 1),
+        ]
+    );
+}
+
+#[test]
 fn leaves_a_new_tab_at_the_end_when_its_source_was_last() {
     let herdr = FakeHerdr::new(focused(
         snapshot(
@@ -2405,6 +2514,18 @@ fn balance_stops_when_the_rebuilt_tab_is_not_the_grid() {
 }
 
 #[test]
+fn manifest_exposes_the_create_tab_to_the_right_action() {
+    let manifest = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/herdr-plugin.toml"))
+        .expect("the manifest sits next to Cargo.toml");
+
+    assert!(
+        manifest
+            .lines()
+            .any(|line| line.trim() == r#"id = "new-tab""#)
+    );
+}
+
+#[test]
 fn every_manifest_entrypoint_is_a_command_the_plugin_accepts() {
     // The manifest is what herdr actually runs, so a typo there only shows up when an
     // action or event fires. Running the real binary on each binding catches it here.
@@ -2933,6 +3054,22 @@ fn tab_move_reply() -> Reply {
     Ok(json!({"type": "tab_list", "tabs": []}))
 }
 
+fn tab_created_reply(tab_id: &str, pane_id: &str) -> Reply {
+    Ok(json!({
+        "type": "tab_created",
+        "tab": {"tab_id": tab_id},
+        "root_pane": {"pane_id": pane_id},
+    }))
+}
+
+fn tab_created_reply_without_tab_id(pane_id: &str) -> Reply {
+    Ok(json!({
+        "type": "tab_created",
+        "tab": {},
+        "root_pane": {"pane_id": pane_id},
+    }))
+}
+
 fn move_reply() -> Reply {
     successful_move_reply(
         ("pane-moved", "workspace-1", "tab-main"),
@@ -3190,6 +3327,13 @@ fn tab_move_call(tab_id: &str, insert_index: usize) -> Call {
     call(
         "tab.move",
         json!({"tab_id": tab_id, "insert_index": insert_index}),
+    )
+}
+
+fn create_tab_call(workspace_id: &str) -> Call {
+    call(
+        "tab.create",
+        json!({"workspace_id": workspace_id, "focus": true}),
     )
 }
 

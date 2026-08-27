@@ -2,7 +2,7 @@ id = "jeiea.move-pane"
 name = "Move Pane"
 version = "0.1.0"
 min_herdr_version = "0.8.0"
-description = "Move panes or focus across tabs and workspaces, reorder workspaces, add panes and balance tab layouts"
+description = "Move panes or focus across tabs and workspaces, create tabs, reorder workspaces, add panes and balance tab layouts"
 platforms = ["macos", "linux"]
 
 [[build]]
@@ -31,6 +31,12 @@ id = "to-previous-tab"
 title = "Move pane to previous tab"
 contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "tab", "previous"]
+
+[[actions]]
+id = "new-tab"
+title = "Create tab to the right"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "new-tab"]
 
 [[actions]]
 id = "to-new-tab"

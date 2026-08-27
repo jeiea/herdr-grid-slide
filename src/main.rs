@@ -47,6 +47,7 @@ enum Command {
         direction: MoveDirection,
         scope: Scope,
     },
+    CreateTab,
     MoveToNewTab,
     MoveToNewWorkspace,
     MoveWorkspace(MoveDirection),
@@ -152,6 +153,11 @@ enum LayoutNode {
 #[derive(Deserialize)]
 struct PaneInfoResult {
     pane: PaneRef,
+}
+
+#[derive(Deserialize)]
+struct TabCreateResult {
+    tab: Option<TabRef>,
 }
 
 #[derive(Deserialize)]
@@ -321,6 +327,7 @@ fn run() -> Result<()> {
     match command {
         Command::Focus(direction) => focus_with_anchor(&context, direction, &mut client),
         Command::Move { direction, scope } => move_pane(&context, direction, scope, &mut client),
+        Command::CreateTab => create_tab_to_right(&context, &mut client),
         Command::MoveToNewTab => move_pane_to_new_tab(&context, &mut client),
         Command::MoveToNewWorkspace => move_pane_to_new_workspace(&context, &mut client),
         Command::MoveWorkspace(direction) => move_workspace(&context, direction, &mut client),
@@ -334,6 +341,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
     let args: Vec<_> = args.collect();
     match args.as_slice() {
         [operation] => match operation.as_str() {
+            "new-tab" => Ok(Command::CreateTab),
             "split-pane" | "new-pane" => Ok(Command::CreatePane),
             "to-new-tab" => Ok(Command::MoveToNewTab),
             "to-new-workspace" => Ok(Command::MoveToNewWorkspace),
@@ -377,7 +385,7 @@ fn parse_move_direction(direction: &str) -> Result<MoveDirection> {
 }
 
 fn usage() -> String {
-    "usage: herdr-move-pane <workspace|tab> <next|previous> | move-workspace <next|previous> | focus <direction> | to-new-tab | to-new-workspace | split-pane | new-pane | balance | on-pane-focused".into()
+    "usage: herdr-move-pane <workspace|tab> <next|previous> | move-workspace <next|previous> | focus <direction> | new-tab | to-new-tab | to-new-workspace | split-pane | new-pane | balance | on-pane-focused".into()
 }
 
 fn read_context(needs_state_dir: bool) -> Result<Context> {
@@ -422,6 +430,39 @@ fn move_pane(
     }
     balance_focused_pane(context, client, Some(&target_tab_id))
         .map_err(|error| format!("pane moved, but automatic balance failed: {error}"))
+}
+
+fn create_tab_to_right(context: &Context, client: &mut SocketClient) -> Result<()> {
+    let snapshot = read_snapshot(client)?;
+    let navigation = navigation_context(context, &snapshot);
+    let tabs = tabs_in_display_order(&snapshot, navigation.workspace_id);
+    let source = current_position(&tabs, navigation.tab_id, |tab| tab.tab_id.as_str())?;
+    let result = client.request(
+        "tab.create",
+        json!({"workspace_id": navigation.workspace_id, "focus": true}),
+    )?;
+    if source + 1 == tabs.len() {
+        return Ok(());
+    }
+    let created_tab_id = serde_json::from_value::<TabCreateResult>(result)
+        .ok()
+        .and_then(|created| created.tab)
+        .map(|tab| tab.tab_id)
+        .ok_or(
+            "tab creation completed, but herdr api tab.create response is missing the created tab id",
+        )?;
+    client
+        .request(
+            "tab.move",
+            json!({"tab_id": &created_tab_id, "insert_index": source + 1}),
+        )
+        .map_err(|error| {
+            format!(
+                "tab creation completed, but positioning {created_tab_id} after {} failed: {error}",
+                navigation.tab_id
+            )
+        })?;
+    Ok(())
 }
 
 fn move_pane_to_new_tab(context: &Context, client: &mut SocketClient) -> Result<()> {
