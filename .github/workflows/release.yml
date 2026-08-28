@@ -39,14 +39,7 @@ jobs:
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
       - name: Run release quality gate
-        run: |
-          shellcheck scripts/*.sh tests/*.sh
-          sh tests/install_test.sh
-          sh tests/version_test.sh
-          cargo fmt --check
-          cargo clippy --locked --all-targets -- -D warnings
-          cargo test --locked
-          cargo build --locked --release
+        run: ./.mise/tasks/check.sh
 
   build:
     name: Build ${{ matrix.target }}

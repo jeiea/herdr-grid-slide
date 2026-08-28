@@ -6,11 +6,28 @@ TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/herdr-move-pane-version.XXXXXX")
 trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
 
 cp "$ROOT/Cargo.toml" "$TMP_DIR/Cargo.toml"
+cp "$ROOT/Cargo.lock" "$TMP_DIR/Cargo.lock"
 cp "$ROOT/herdr-plugin.toml" "$TMP_DIR/herdr-plugin.toml"
 VERSION=$(awk -F ' *= *' '$1 == "version" { value = $2; gsub(/"/, "", value); print value; exit }' "$ROOT/herdr-plugin.toml")
 NEXT_VERSION=$(printf '%s\n' "$VERSION" | awk -F . '{ print $1 "." $2 "." $3 + 1 }')
 
 (cd "$TMP_DIR" && "$ROOT/scripts/check-version.sh")
+
+awk -v next_version="$NEXT_VERSION" '
+  /^\[\[package\]\]$/ { package = 1; root = 0 }
+  package && /^name *= *"herdr-move-pane"$/ { root = 1 }
+  root && !changed && /^version *=/ {
+    sub(/"[^"]+"/, "\"" next_version "\"")
+    changed = 1
+  }
+  { print }
+' "$TMP_DIR/Cargo.lock" >"$TMP_DIR/Cargo.lock.next"
+mv "$TMP_DIR/Cargo.lock.next" "$TMP_DIR/Cargo.lock"
+if (cd "$TMP_DIR" && "$ROOT/scripts/check-version.sh"); then
+  echo "mismatched Cargo.lock version unexpectedly succeeded" >&2
+  exit 1
+fi
+cp "$ROOT/Cargo.lock" "$TMP_DIR/Cargo.lock"
 
 awk -v next_version="$NEXT_VERSION" '
   /^\[package\]$/ { package = 1 }

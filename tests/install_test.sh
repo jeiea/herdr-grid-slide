@@ -57,12 +57,6 @@ if PATH="$FAKE_BIN:$PATH" MOCK_UNAME_S=Windows MOCK_UNAME_M=x86_64 \
   exit 1
 fi
 
-mkdir -p "$PROJECT/target/release"
-printf '#!/bin/sh\nprintf "local binary\\n"\n' >"$PROJECT/target/release/herdr-move-pane"
-chmod +x "$PROJECT/target/release/herdr-move-pane"
-"$PROJECT/scripts/build-plugin.sh"
-test "$("$PROJECT/bin/herdr-move-pane")" = "local binary"
-
 printf '#!/bin/sh\nprintf "existing binary\\n"\n' >"$PROJECT/bin/herdr-move-pane"
 chmod +x "$PROJECT/bin/herdr-move-pane"
 TARGET=aarch64-apple-darwin

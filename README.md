@@ -131,28 +131,24 @@ Supported targets:
 
 ## Development
 
-Requires Rust 1.97 or later.
+Requires mise and Herdr 0.8 or later. Mise supplies the pinned Rust 1.97.1 and ShellCheck 0.9.0
+toolchains.
+
+Build and apply the local plugin for both the first link and later source changes with:
 
 ```sh
-cargo fmt --check
-cargo clippy --all-targets -- -D warnings
-cargo test
-cargo build --release
-./scripts/build-plugin.sh
-herdr plugin link .
+mise run apply-local
 ```
 
-After linking the checkout, rebuild and reload the plugin after source changes with:
+The task builds `target/release/herdr-move-pane` with the locked dependencies, atomically copies it
+to `bin/herdr-move-pane`, and links the checkout. An existing `bin` copy remains available if the
+build or replacement fails and is independent of Cargo's disposable `target` directory.
+
+Run the local quality checks with:
 
 ```sh
-mise run reload-plugin
+mise run check
 ```
-
-The task builds `target/release/herdr-move-pane`, then `scripts/build-plugin.sh` atomically copies it
-to `bin/herdr-move-pane`, which is the executable referenced by every manifest action and event.
-Reloading Herdr's configuration alone does not update that executable. When no local release binary
-exists, the build script instead follows the same verified release-download path used by
-installations.
 
 The plugin exposes these actions:
 

@@ -19,6 +19,17 @@ cargo_version=$(awk '
     exit
   }
 ' Cargo.toml)
+cargo_lock_version=$(awk '
+  /^\[\[package\]\]$/ { package = 1; root = 0; next }
+  package && /^name *= *"herdr-move-pane"$/ { root = 1; next }
+  root && /^version *=/ {
+    value = $0
+    sub(/^[^=]*= *"/, "", value)
+    sub(/".*/, "", value)
+    print value
+    exit
+  }
+' Cargo.lock)
 
 case "$manifest_version" in
   '' | *[!0-9.]* | .* | *.)
@@ -32,6 +43,10 @@ if ! printf '%s\n' "$manifest_version" | awk -F . 'NF == 3 && $1 ~ /^(0|[1-9][0-
 fi
 if [ "$manifest_version" != "$cargo_version" ]; then
   echo "version mismatch: herdr-plugin.toml=$manifest_version Cargo.toml=$cargo_version" >&2
+  exit 1
+fi
+if [ "$manifest_version" != "$cargo_lock_version" ]; then
+  echo "version mismatch: herdr-plugin.toml=$manifest_version Cargo.lock=$cargo_lock_version" >&2
   exit 1
 fi
 
@@ -59,4 +74,3 @@ elif git rev-parse --git-dir >/dev/null 2>&1 && git show-ref --verify --quiet "r
 fi
 
 printf '%s\n' "$manifest_version"
-

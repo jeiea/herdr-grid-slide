@@ -7,11 +7,14 @@ the tag and GitHub release.
 
 ## Prepare a version
 
-1. Update `version` in `herdr-plugin.toml` and `Cargo.toml`.
-2. Refresh `Cargo.lock` with Rust 1.97.1.
-3. Run the local quality gates listed in the README.
-4. Merge the change to the default branch.
-5. Run the **Release** workflow from the default branch.
+1. Run `mise run bump -- <version>`, for example `mise run bump -- 0.1.1`.
+2. Run the local quality gate listed in the README.
+3. Merge the change to the default branch.
+4. Run the **Release** workflow from the default branch.
+
+The bump task requires a new `MAJOR.MINOR.PATCH` version. It stages and validates the plugin manifest,
+the root Cargo package, and the root package entry in `Cargo.lock`, then replaces each file atomically.
+If a replacement fails, it restores the originals from backups.
 
 The workflow will not publish from a private repository or a non-default branch. Do not create the
 tag manually; the workflow creates the exact workflow commit's tag and a draft release after all
