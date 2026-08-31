@@ -166,6 +166,18 @@ Run the local quality checks with:
 mise run check
 ```
 
+The default checks keep the fast, deterministic `FakeHerdr` integration suite for socket requests,
+branch coverage, errors, and races. To also smoke-test representative directional moves against an
+isolated Herdr 0.8.2 named session, run:
+
+```sh
+mise run live-herdr
+```
+
+The live test links a temporary copy of the manifest and Cargo-built binary, invokes the real plugin
+actions, and removes its named sessions and temporary Herdr paths afterward. It does not modify the
+repository `bin/` directory or user plugin links.
+
 The plugin exposes these actions:
 
 - `jeiea.move-pane.to-next-workspace`
