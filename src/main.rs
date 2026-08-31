@@ -53,6 +53,7 @@ enum Command {
     MoveToNewWorkspace,
     MoveWorkspace(MoveDirection),
     Focus(PaneDirection),
+    MoveDirectionally(PaneDirection),
     CreatePane,
     OnPaneFocused,
     Balance,
@@ -176,6 +177,11 @@ struct PaneMoveResult {
     move_result: MoveOutcome,
 }
 
+#[derive(Deserialize)]
+struct PaneSwapResult {
+    swap: SwapOutcome,
+}
+
 /// What herdr made of a move. A move it declined comes back with `changed: false`
 /// and a reason instead of an error.
 #[derive(Deserialize)]
@@ -183,9 +189,24 @@ struct MoveOutcome {
     changed: bool,
     created_tab: Option<TabRef>,
     created_workspace: Option<WorkspaceRef>,
+    pane: PaneRef,
     reason: Option<String>,
     #[serde(default)]
     source_layout: Option<TabLayout>,
+}
+
+/// What herdr made of a swap. A missing pane or a pane that changed tabs is a
+/// successful API response with `changed: false` and a reason.
+#[derive(Deserialize)]
+struct SwapOutcome {
+    changed: bool,
+    reason: Option<String>,
+}
+
+impl SwapOutcome {
+    fn refusal_reason(self) -> Option<String> {
+        (!self.changed).then(|| self.reason.unwrap_or_else(|| "no reason given".to_owned()))
+    }
 }
 
 #[derive(Deserialize)]
@@ -204,6 +225,23 @@ impl SplitDirection {
             SplitDirection::Right => "right",
             SplitDirection::Down => "down",
         }
+    }
+}
+
+impl PaneDirection {
+    fn boundary_split(self) -> SplitDirection {
+        match self {
+            PaneDirection::Left | PaneDirection::Right => SplitDirection::Right,
+            PaneDirection::Up | PaneDirection::Down => SplitDirection::Down,
+        }
+    }
+
+    fn requires_boundary_swap(self) -> bool {
+        matches!(self, PaneDirection::Right | PaneDirection::Down)
+    }
+
+    fn is_horizontal(self) -> bool {
+        matches!(self, PaneDirection::Left | PaneDirection::Right)
     }
 }
 
@@ -323,6 +361,7 @@ fn run() -> Result<()> {
     let context = read_context(matches!(
         command,
         Command::Focus(_)
+            | Command::MoveDirectionally(_)
             | Command::Move {
                 scope: Scope::Tab,
                 ..
@@ -332,6 +371,9 @@ fn run() -> Result<()> {
     let mut client = SocketClient::new(&context.socket_path);
     match command {
         Command::Focus(direction) => focus_with_anchor(&context, direction, &mut client),
+        Command::MoveDirectionally(direction) => {
+            move_directionally(&context, direction, &mut client)
+        }
         Command::Move { direction, scope } => move_pane(&context, direction, scope, &mut client),
         Command::CreateTab => create_tab_to_right(&context, &mut client),
         Command::CreateWorkspace => create_workspace_after_current(&context, &mut client),
@@ -358,13 +400,10 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
             _ => Err(usage()),
         },
         [operation, direction] if operation == "focus" => {
-            Ok(Command::Focus(match direction.as_str() {
-                "left" => PaneDirection::Left,
-                "right" => PaneDirection::Right,
-                "up" => PaneDirection::Up,
-                "down" => PaneDirection::Down,
-                _ => return Err(usage()),
-            }))
+            Ok(Command::Focus(parse_pane_direction(direction)?))
+        }
+        [operation, direction] if operation == "move" => {
+            Ok(Command::MoveDirectionally(parse_pane_direction(direction)?))
         }
         [operation, direction] if operation == "move-workspace" => {
             Ok(Command::MoveWorkspace(parse_move_direction(direction)?))
@@ -392,8 +431,18 @@ fn parse_move_direction(direction: &str) -> Result<MoveDirection> {
     }
 }
 
+fn parse_pane_direction(direction: &str) -> Result<PaneDirection> {
+    match direction {
+        "left" => Ok(PaneDirection::Left),
+        "right" => Ok(PaneDirection::Right),
+        "up" => Ok(PaneDirection::Up),
+        "down" => Ok(PaneDirection::Down),
+        _ => Err(usage()),
+    }
+}
+
 fn usage() -> String {
-    "usage: herdr-move-pane <workspace|tab> <next|previous> | move-workspace <next|previous> | focus <direction> | new-tab | new-workspace | to-new-tab | to-new-workspace | split-pane | new-pane | balance | on-pane-focused".into()
+    "usage: herdr-move-pane <workspace|tab> <next|previous> | move-workspace <next|previous> | <focus|move> <direction> | new-tab | new-workspace | to-new-tab | to-new-workspace | split-pane | new-pane | balance | on-pane-focused".into()
 }
 
 fn read_context(needs_state_dir: bool) -> Result<Context> {
@@ -637,6 +686,65 @@ fn focus_with_anchor(
         resolve_focus_target(&navigation, direction, &snapshot, state.as_ref())?;
     client.request("pane.focus", json!({"pane_id": target.pane_id}))?;
     write_focus_anchor_state(state_dir, &next_state)
+}
+
+fn move_directionally(
+    context: &Context,
+    direction: PaneDirection,
+    client: &mut SocketClient,
+) -> Result<()> {
+    let state_dir = context
+        .state_dir
+        .as_ref()
+        .ok_or("missing HERDR_PLUGIN_STATE_DIR")?;
+    fs::create_dir_all(state_dir).map_err(|error| error.to_string())?;
+    let snapshot = read_snapshot(client)?;
+    let navigation = navigation_context(context, &snapshot);
+    let state = read_focus_anchor_state(state_dir)?;
+    let (target, mut next_state) =
+        resolve_focus_target(&navigation, direction, &snapshot, state.as_ref())?;
+    if target.pane_id == navigation.pane_id {
+        return Ok(());
+    }
+    let source_pane_id = navigation.pane_id.to_owned();
+    let source_tab_id = navigation.tab_id.to_owned();
+    let target_pane_id = target.pane_id.clone();
+    if next_state.tab_id == source_tab_id {
+        let swapped = request_pane_swap(client, &source_pane_id, &target_pane_id)?;
+        if swapped.refusal_reason().is_some() {
+            return Ok(());
+        }
+        next_state.pane_id = source_pane_id;
+        return write_focus_anchor_state(state_dir, &next_state);
+    }
+
+    let split_direction = direction.boundary_split();
+    let needs_swap = direction.requires_boundary_swap();
+    let target_tab_id = next_state.tab_id.clone();
+    let moved = request_pane_move(
+        client,
+        &source_pane_id,
+        attachment(&target_tab_id, &target_pane_id, split_direction),
+        !needs_swap,
+    )?;
+    if !moved.changed {
+        return Ok(());
+    }
+    let moved_pane_id = moved.pane.pane_id;
+    if needs_swap {
+        let swapped = request_pane_swap(client, &moved_pane_id, &target_pane_id)
+            .map_err(|error| format!("pane moved, but directional swap failed: {error}"))?;
+        if let Some(reason) = swapped.refusal_reason() {
+            return Err(format!("pane moved, but directional swap failed: {reason}"));
+        }
+    }
+    next_state.pane_id = moved_pane_id;
+    write_focus_anchor_state(state_dir, &next_state)?;
+    if direction.is_horizontal() {
+        balance_focused_pane(context, client, Some(&target_tab_id))
+            .map_err(|error| format!("pane moved, but automatic balance failed: {error}"))?;
+    }
+    Ok(())
 }
 
 /// Splits the focused pane along the direction the tab already grows in.
@@ -1061,6 +1169,23 @@ fn request_pane_move(
     Ok(serde_json::from_value::<PaneMoveResult>(result)
         .map_err(|_| "herdr api pane.move returned an invalid response".to_owned())?
         .move_result)
+}
+
+fn request_pane_swap(
+    client: &mut SocketClient,
+    source_pane_id: &str,
+    target_pane_id: &str,
+) -> Result<SwapOutcome> {
+    let result = client.request(
+        "pane.swap",
+        json!({
+            "source_pane_id": source_pane_id,
+            "target_pane_id": target_pane_id,
+        }),
+    )?;
+    Ok(serde_json::from_value::<PaneSwapResult>(result)
+        .map_err(|_| "herdr api pane.swap returned an invalid response".to_owned())?
+        .swap)
 }
 
 /// Cleans up after a rebuild that stopped halfway. Whatever is still parked in the

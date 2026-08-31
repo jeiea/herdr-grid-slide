@@ -2,17 +2,32 @@
 
 Move the current Herdr pane cyclically to the adjacent tab or workspace, create a tab or workspace
 immediately after the current one, move the pane to a new tab or workspace, reorder workspaces,
-navigate panes in visual order across container boundaries, split a pane, or lay a tab out as an
-even grid. Pane moves split an existing destination on the right at a 50:50 ratio and keep focus.
-Move, split, and new pane actions do not balance layouts themselves, except that a successful
-tab-scoped move starts automatic balance before returning. It balances the destination if that tab
-is still focused after the balance lock is acquired.
+navigate or move panes directionally in visual order across container boundaries, split a pane, or
+lay a tab out as an even grid. Directional moves swap panes within a tab and move them across tabs or
+workspaces at an edge. Scoped pane moves split an existing destination on the right at a 50:50 ratio
+and keep focus. Move, split, and new pane actions do not balance layouts themselves, except that a
+successful tab-scoped move or horizontal directional boundary move starts automatic balance before
+returning. It balances the destination if that tab is still focused after the balance lock is
+acquired.
 
 Workspace-scoped pane moves target the active tab of the adjacent workspace and use visible
 workspace `number` order. Tab-scoped pane moves stay in the current workspace and follow displayed
 tab order. Both wrap at either end. `move-workspace` instead moves the active workspace itself
 through workspace `number` order. Directional focus preserves its cross-axis position where possible
 and wraps across tabs or workspaces at an edge.
+
+Directional actions treat tabs as connected from left to right and workspaces as connected from top
+to bottom. `move-left`, `move-right`, `move-up`, and `move-down` select the same geometric target as
+their `focus-*` counterpart. A target in the same tab swaps with the current pane. At a boundary,
+left and right move into the previous or next tab, while up and down move into the active tab of the
+previous or next workspace. A pane enters on the movement edge: right of the target when moving left,
+left when moving right, below when moving up, and above when moving down. The cross-axis position is
+preserved on a best-effort basis. After a move or swap completes, focus follows the moved pane.
+
+Herdr only inserts on the right or below a target. A boundary `move-right` or `move-down` therefore
+moves without focus and then swaps the moved pane with the target. If that swap request fails, its
+response is invalid, or Herdr declines it, the pane remains moved and the action reports the partial
+completion.
 
 `new-tab` creates a focused tab with its default shell pane in the current workspace and places it
 immediately after the current tab. It leaves the current pane in place and does not override the new
@@ -42,8 +57,9 @@ workspace. If Herdr declines the pane move, the action likewise stops without a 
 the tab already grows in. For mixed or single-pane layouts, a pane wider than twice its height splits
 right; all others split down.
 
-`pane.focused` and successful tab-scoped moves enter automatic balance. The plugin records the latest
-entered tab and its pane set in `HERDR_PLUGIN_STATE_DIR/balance-focus.json`; another pane focus in
+`pane.focused`, successful tab-scoped moves, and successful horizontal directional boundary moves
+enter automatic balance. The plugin records the latest entered tab and its pane set in
+`HERDR_PLUGIN_STATE_DIR/balance-focus.json`; another pane focus in
 that same tab with the same panes does nothing, while a focus that arrives with a new or closed pane
 -- such as the one `new-pane` creates -- balances the tab again. A tab-scoped move ignores a matching
 cached pane set once when the first snapshot after locking still focuses its expected destination.
@@ -56,8 +72,8 @@ Internal focus events from swaps, scratch-tab moves, and rebuilding therefore co
 run instead of starting recursive work. With no state yet, the first observed focus is treated as a
 tab entry because Herdr does not provide the previous tab.
 
-If a tab-scoped pane move succeeds but automatic balance fails, the pane remains moved and the action
-fails with `pane moved, but automatic balance failed: ...`.
+If a tab-scoped or horizontal directional boundary move succeeds but automatic balance fails, the
+pane remains moved and the action fails with `pane moved, but automatic balance failed: ...`.
 
 If `to-new-tab` moves the pane but Herdr omits the created tab ID, or the subsequent tab reorder
 fails, the action fails with an error that says the pane move already completed. The pane remains in
@@ -166,6 +182,10 @@ The plugin exposes these actions:
 - `jeiea.move-pane.focus-down`
 - `jeiea.move-pane.focus-up`
 - `jeiea.move-pane.focus-right`
+- `jeiea.move-pane.move-left`
+- `jeiea.move-pane.move-down`
+- `jeiea.move-pane.move-up`
+- `jeiea.move-pane.move-right`
 - `jeiea.move-pane.split-pane`
 - `jeiea.move-pane.new-pane`
 - `jeiea.move-pane.balance`

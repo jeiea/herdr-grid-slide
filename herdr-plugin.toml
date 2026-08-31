@@ -93,6 +93,30 @@ contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "focus", "right"]
 
 [[actions]]
+id = "move-left"
+title = "Move pane left"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "move", "left"]
+
+[[actions]]
+id = "move-down"
+title = "Move pane down"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "move", "down"]
+
+[[actions]]
+id = "move-up"
+title = "Move pane up"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "move", "up"]
+
+[[actions]]
+id = "move-right"
+title = "Move pane right"
+contexts = ["pane"]
+command = ["./bin/herdr-move-pane", "move", "right"]
+
+[[actions]]
 id = "split-pane"
 title = "Split pane"
 contexts = ["pane"]
