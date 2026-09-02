@@ -1,6 +1,6 @@
 use std::cmp::Ordering;
 use std::env;
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -108,6 +108,7 @@ struct Workspace {
 
 #[derive(Deserialize)]
 struct Tab {
+    label: String,
     tab_id: String,
     workspace_id: String,
 }
@@ -362,6 +363,7 @@ fn run() -> Result<()> {
         command,
         Command::Focus(_)
             | Command::MoveDirectionally(_)
+            | Command::MoveToNewWorkspace
             | Command::Move {
                 scope: Scope::Tab,
                 ..
@@ -378,7 +380,7 @@ fn run() -> Result<()> {
         Command::CreateTab => create_tab_to_right(&context, &mut client),
         Command::CreateWorkspace => create_workspace_after_current(&context, &mut client),
         Command::MoveToNewTab => move_pane_to_new_tab(&context, &mut client),
-        Command::MoveToNewWorkspace => move_pane_to_new_workspace(&context, &mut client),
+        Command::MoveToNewWorkspace => move_tab_to_new_workspace(&context, &mut client),
         Command::MoveWorkspace(direction) => move_workspace(&context, direction, &mut client),
         Command::CreatePane => create_pane(&context, &mut client),
         Command::OnPaneFocused => balance_focused_pane(&context, &mut client, None),
@@ -471,17 +473,7 @@ fn move_pane(
     if target_tab_id == navigation.tab_id {
         return Ok(());
     }
-    let moved = request_pane_move(
-        client,
-        &pane_id,
-        json!({
-            "type": "tab",
-            "tab_id": target_tab_id,
-            "split": "right",
-            "ratio": 0.5,
-        }),
-        true,
-    )?;
+    let moved = request_pane_move(client, &pane_id, tab_edge(&target_tab_id), true)?;
     if !moved.changed || !matches!(scope, Scope::Tab) {
         return Ok(());
     }
@@ -591,48 +583,145 @@ fn move_pane_to_new_tab(context: &Context, client: &mut SocketClient) -> Result<
     Ok(())
 }
 
-fn move_pane_to_new_workspace(context: &Context, client: &mut SocketClient) -> Result<()> {
+/// Moves the focused tab into a focused new workspace. herdr has no request that
+/// carries a tab across workspaces -- `tab.move` only reorders within one -- so the
+/// first pane in reading order opens the workspace and the rest of the tab follows it
+/// one pane at a time, in that order, so the balanced tab keeps its pane order. Focus
+/// then returns to the pane that had it. The whole move runs under the balance lock:
+/// the `pane.focused` hooks it fires along the way wait for it, then find the tab
+/// settled, instead of balancing a half-moved tab and handing focus back to the
+/// leader. The only tab of a workspace stays put, because moving it would close that
+/// workspace.
+fn move_tab_to_new_workspace(context: &Context, client: &mut SocketClient) -> Result<()> {
+    let lock = lock_balance(context)?;
     let snapshot = read_snapshot(client)?;
     let navigation = navigation_context(context, &snapshot);
-    let source_tab_count = snapshot
-        .tabs
-        .iter()
-        .filter(|tab| tab.workspace_id == navigation.workspace_id)
-        .count();
-    if source_tab_count == 1 && find_layout(&snapshot, navigation.tab_id)?.panes.len() <= 1 {
+    let tabs = tabs_in_display_order(&snapshot, navigation.workspace_id);
+    if tabs.len() <= 1 {
         return Ok(());
     }
+    let tab_position = current_position(&tabs, navigation.tab_id, |tab| tab.tab_id.as_str())?;
     let workspaces = workspaces_in_visible_order(&snapshot);
     let source = current_position(&workspaces, navigation.workspace_id, |workspace| {
         workspace.workspace_id.as_str()
     })?;
-    let moved = request_pane_move(
-        client,
-        navigation.pane_id,
-        json!({"type": "new_workspace"}),
-        true,
-    )?;
-    if !moved.changed || source + 1 == workspaces.len() {
+    let order = reading_order(find_layout(&snapshot, navigation.tab_id)?);
+    let (leader, following) = order
+        .split_first()
+        .ok_or_else(|| format!("{} has no panes", navigation.tab_id))?;
+    let destination =
+        new_workspace_destination(custom_label(&tabs[tab_position].label, tab_position));
+    let moved = request_pane_move(client, leader, destination, true)?;
+    if !moved.changed {
         return Ok(());
     }
-    let created_workspace = moved.created_workspace.ok_or(
-        "pane moved to a new workspace, but herdr api pane.move response is missing the created workspace id",
-    )?;
-    client
-        .request(
-            "workspace.move",
-            json!({
-                "workspace_id": created_workspace.workspace_id,
-                "insert_index": source + 1,
-            }),
+    let created_tab_id = follow_leader(client, &moved, leader, following, navigation.tab_id)?;
+    if *leader != navigation.pane_id {
+        client
+            .request("pane.focus", json!({"pane_id": navigation.pane_id}))
+            .map_err(|error| {
+                format!(
+                    "tab moved to a new workspace, but refocusing {} failed: {error}",
+                    navigation.pane_id
+                )
+            })?;
+    }
+    if source + 1 < workspaces.len() {
+        let created_workspace = moved.created_workspace.as_ref().ok_or(
+            "tab moved to a new workspace, but herdr api pane.move response is missing the created workspace id",
+        )?;
+        client
+            .request(
+                "workspace.move",
+                json!({
+                    "workspace_id": created_workspace.workspace_id,
+                    "insert_index": source + 1,
+                }),
+            )
+            .map_err(|error| {
+                format!(
+                    "tab moved to a new workspace, but positioning {} after {} failed: {error}",
+                    created_workspace.workspace_id, navigation.workspace_id
+                )
+            })?;
+    }
+    match created_tab_id {
+        Some(tab_id) => balance_focused_pane_locked(&lock, client, Some(tab_id))
+            .map_err(|error| format!("tab moved, but automatic balance failed: {error}")),
+        None => Ok(()),
+    }
+}
+
+/// Brings the panes that were left behind the leading pane into the tab its move
+/// created, each to the right of the one before it so the tab keeps its reading
+/// order; without a target herdr would split the still-focused leader every time
+/// and reverse everything after the second pane. Panes take new IDs when they cross
+/// workspaces, so each target is the ID herdr reported for the previous move. herdr
+/// only reports the created tab on the leading move, so without its ID the rest of
+/// the tab stays where it was; likewise a pane that cannot follow leaves itself and
+/// the ones after it behind, and the error says which.
+fn follow_leader<'a>(
+    client: &mut SocketClient,
+    moved: &'a MoveOutcome,
+    leader: &str,
+    following: &[&str],
+    source_tab_id: &str,
+) -> Result<Option<&'a str>> {
+    if following.is_empty() {
+        return Ok(None);
+    }
+    let left_behind = |problem: String, remaining: &[&str]| {
+        let verb = if remaining.len() == 1 {
+            "remains"
+        } else {
+            "remain"
+        };
+        format!(
+            "{leader} moved to a new workspace, but {problem}; {} {verb} in {source_tab_id}",
+            remaining.join(", ")
         )
-        .map_err(|error| {
-            format!(
-                "pane moved to a new workspace, but positioning {} after {} failed: {error}",
-                created_workspace.workspace_id, navigation.workspace_id
+    };
+    let created_tab_id = moved
+        .created_tab
+        .as_ref()
+        .map(|tab| tab.tab_id.as_str())
+        .ok_or_else(|| {
+            left_behind(
+                "herdr api pane.move response is missing the created tab id".to_owned(),
+                following,
             )
         })?;
-    Ok(())
+    let mut target_pane_id = moved.pane.pane_id.clone();
+    for (index, pane_id) in following.iter().enumerate() {
+        let destination = attachment(created_tab_id, &target_pane_id, SplitDirection::Right);
+        let outcome = move_pane_to(client, pane_id, destination).map_err(|error| {
+            left_behind(
+                format!("moving {pane_id} after it failed: {error}"),
+                &following[index..],
+            )
+        })?;
+        target_pane_id = outcome.pane.pane_id;
+    }
+    Ok(Some(created_tab_id))
+}
+
+fn new_workspace_destination(tab_label: Option<&str>) -> Value {
+    let mut destination = json!({"type": "new_workspace"});
+    if let Some(label) = tab_label {
+        destination["tab_label"] = label.into();
+    }
+    destination
+}
+
+/// herdr reports a tab's display label, which is its custom name or, failing that,
+/// its one-based position in the workspace, and the snapshot does not say which. A
+/// label that spells the tab's own position is taken as the default and left
+/// behind, because carrying it over would pin the new tab to a position it no
+/// longer has. A custom name that happens to equal that position is lost with it;
+/// herdr 0.8.2 offers nothing to tell the two apart. Once a herdr snapshot exposes
+/// whether a label is custom, use that flag here instead of this comparison.
+fn custom_label(label: &str, position: usize) -> Option<&str> {
+    (label != (position + 1).to_string()).then_some(label)
 }
 
 /// Moves the active workspace itself one step through the visible number order,
@@ -800,22 +889,45 @@ fn balance(context: &Context, client: &mut SocketClient) -> Result<()> {
 fn balance_focused_pane(
     context: &Context,
     client: &mut SocketClient,
-    mut expected_destination_tab_id: Option<&str>,
+    expected_destination_tab_id: Option<&str>,
 ) -> Result<()> {
+    let lock = lock_balance(context)?;
+    balance_focused_pane_locked(&lock, client, expected_destination_tab_id)
+}
+
+/// The lock every hook and tab-scoped move takes before reading the session, held
+/// for as long as the value lives.
+struct BalanceLock<'a> {
+    state_dir: &'a Path,
+    _file: File,
+}
+
+fn lock_balance(context: &Context) -> Result<BalanceLock<'_>> {
     let state_dir = context
         .state_dir
-        .as_ref()
+        .as_deref()
         .ok_or("missing HERDR_PLUGIN_STATE_DIR")?;
     fs::create_dir_all(state_dir).map_err(|error| error.to_string())?;
-    let lock = OpenOptions::new()
+    let file = OpenOptions::new()
         .create(true)
         .read(true)
         .truncate(false)
         .write(true)
         .open(state_dir.join(BALANCE_FOCUS_LOCK_FILE))
         .map_err(|error| error.to_string())?;
-    lock.lock().map_err(|error| error.to_string())?;
+    file.lock().map_err(|error| error.to_string())?;
+    Ok(BalanceLock {
+        state_dir,
+        _file: file,
+    })
+}
 
+fn balance_focused_pane_locked(
+    lock: &BalanceLock,
+    client: &mut SocketClient,
+    mut expected_destination_tab_id: Option<&str>,
+) -> Result<()> {
+    let state_dir = lock.state_dir;
     let mut previous =
         read_balance_focus_state(state_dir)?.map(|state| (state.tab_id, state.pane_ids));
     let mut failures = Vec::new();
@@ -1003,9 +1115,7 @@ fn rebuild_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
         ensure_automatic_target_is_focused(client, plan)
             .map_err(|error| recovered(client, plan, anchor, &scratch, error))?;
         let destination = match &scratch.tab_id {
-            Some(tab_id) => {
-                json!({"type": "tab", "tab_id": tab_id, "split": "right", "ratio": 0.5})
-            }
+            Some(tab_id) => tab_edge(tab_id),
             None => json!({"type": "new_tab", "workspace_id": plan.workspace_id}),
         };
         match move_pane_to(client, pane, destination) {
@@ -1119,6 +1229,11 @@ fn ensure_automatic_target_is_focused(client: &mut SocketClient, plan: &GridPlan
             plan.tab_id
         ))
     }
+}
+
+/// Where a pane goes when it joins a tab at its right edge.
+fn tab_edge(tab_id: &str) -> Value {
+    json!({"type": "tab", "tab_id": tab_id, "split": "right", "ratio": 0.5})
 }
 
 /// Where a pane goes when it is hung off one that is already in the tab.
@@ -2120,7 +2235,16 @@ fn required_env(name: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Bounds, LayoutPane, Rect, TabLayout, grid_row_sizes, sorted_pane_ids};
+    use super::{
+        Bounds, LayoutPane, Rect, TabLayout, custom_label, grid_row_sizes, sorted_pane_ids,
+    };
+
+    #[test]
+    fn custom_label_drops_only_the_positional_number_herdr_reports_by_default() {
+        assert_eq!(custom_label("build", 0), Some("build"));
+        assert_eq!(custom_label("2", 1), None);
+        assert_eq!(custom_label("2", 0), Some("2"));
+    }
 
     #[test]
     fn grid_row_sizes_cover_column_selection_variants() {

@@ -52,7 +52,7 @@ command = ["./bin/herdr-move-pane", "to-new-tab"]
 
 [[actions]]
 id = "to-new-workspace"
-title = "Move pane to new workspace"
+title = "Move tab to new workspace"
 contexts = ["pane"]
 command = ["./bin/herdr-move-pane", "to-new-workspace"]
 

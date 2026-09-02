@@ -138,6 +138,73 @@ fn move_down_crosses_into_the_next_workspaces_active_tab_and_keeps_focus() {
     );
 }
 
+#[test]
+#[ignore = "requires Herdr 0.8.2 and starts an isolated named session"]
+fn to_new_workspace_carries_the_whole_tab_after_its_source_and_keeps_focus() {
+    let mut live = LiveHerdr::start().expect("start isolated Herdr session");
+    let source = live
+        .create_workspace("workspace-tab-source")
+        .expect("create source workspace");
+    let moving = live
+        .create_tab(&source.workspace_id, "moving")
+        .expect("create moving tab beside the workspace's first tab");
+    let middle = live
+        .split_pane(&moving.root_pane_id, "right", true)
+        .expect("create middle pane in the moving tab");
+    let focused = live
+        .split_pane(&middle, "right", true)
+        .expect("create focused right pane in the moving tab");
+    let trailing = live
+        .create_workspace("workspace-trailing")
+        .expect("create trailing workspace");
+    live.focus_workspace(&source.workspace_id)
+        .expect("focus source workspace");
+    live.focus_tab(&moving.tab_id).expect("focus moving tab");
+    live.link_plugin().expect("link copied plugin");
+
+    let before = live.snapshot().expect("capture pre-action snapshot");
+    let left_terminal_id = terminal_id(&before, &moving.root_pane_id);
+    let middle_terminal_id = terminal_id(&before, &middle);
+    let right_terminal_id = terminal_id(&before, &focused);
+    assert_eq!(focused_pane_id(&before), focused);
+
+    live.invoke_action("to-new-workspace")
+        .expect("invoke to-new-workspace and wait for its log");
+
+    let after = live.snapshot().expect("capture post-action snapshot");
+    let left = pane_by_terminal_id(&after, &left_terminal_id);
+    let middle = pane_by_terminal_id(&after, &middle_terminal_id);
+    let right = pane_by_terminal_id(&after, &right_terminal_id);
+    let created_workspace_id = left["workspace_id"].as_str().expect("created workspace ID");
+    let created_tab_id = left["tab_id"].as_str().expect("created tab ID");
+    let moved_ids: Vec<&str> = [left, middle, right]
+        .map(|pane| pane["pane_id"].as_str().expect("moved pane ID"))
+        .to_vec();
+    assert_ne!(created_workspace_id, source.workspace_id);
+    for pane in [middle, right] {
+        assert_eq!(pane["workspace_id"], created_workspace_id);
+        assert_eq!(pane["tab_id"], created_tab_id);
+    }
+    assert_eq!(right["focused"], true);
+    assert_eq!(focused_pane_id(&after), moved_ids[2]);
+    assert_eq!(pane_ids_in_tab(&after, created_tab_id).len(), 3);
+    assert!(pane_ids_in_tab(&after, &moving.tab_id).is_empty());
+    assert_eq!(
+        pane_ids_in_tab(&after, &source.tab_id),
+        BTreeSet::from([source.root_pane_id.clone()])
+    );
+    assert_eq!(tab(&after, created_tab_id)["label"], "moving");
+    assert!(
+        workspace_number(&after, &source.workspace_id)
+            < workspace_number(&after, created_workspace_id)
+    );
+    assert!(
+        workspace_number(&after, created_workspace_id)
+            < workspace_number(&after, &trailing.workspace_id)
+    );
+    assert_eq!(panes_in_reading_order(&after, created_tab_id), moved_ids);
+}
+
 struct LiveHerdr {
     herdr: PathBuf,
     session: String,
@@ -605,6 +672,54 @@ fn pane_ids_in_tab(snapshot: &Value, tab_id: &str) -> BTreeSet<String> {
                 .to_string()
         })
         .collect()
+}
+
+fn terminal_id(snapshot: &Value, pane_id: &str) -> String {
+    pane(snapshot, pane_id)["terminal_id"]
+        .as_str()
+        .expect("pane terminal ID")
+        .to_string()
+}
+
+fn tab<'a>(snapshot: &'a Value, tab_id: &str) -> &'a Value {
+    snapshot["tabs"]
+        .as_array()
+        .expect("snapshot tab list")
+        .iter()
+        .find(|tab| tab["tab_id"] == tab_id)
+        .unwrap_or_else(|| panic!("tab {tab_id} missing from snapshot: {snapshot}"))
+}
+
+fn workspace_number(snapshot: &Value, workspace_id: &str) -> u64 {
+    snapshot["workspaces"]
+        .as_array()
+        .expect("snapshot workspace list")
+        .iter()
+        .find(|workspace| workspace["workspace_id"] == workspace_id)
+        .and_then(|workspace| workspace["number"].as_u64())
+        .unwrap_or_else(|| panic!("workspace {workspace_id} missing from snapshot: {snapshot}"))
+}
+
+/// Pane IDs of a tab sorted by their top edge, then their left edge.
+fn panes_in_reading_order<'a>(snapshot: &'a Value, tab_id: &str) -> Vec<&'a str> {
+    let mut panes: Vec<(u64, u64, &str)> = snapshot["layouts"]
+        .as_array()
+        .expect("snapshot layout list")
+        .iter()
+        .find(|layout| layout["tab_id"] == tab_id)
+        .and_then(|layout| layout["panes"].as_array())
+        .unwrap_or_else(|| panic!("tab {tab_id} layout missing from snapshot: {snapshot}"))
+        .iter()
+        .map(|pane| {
+            (
+                pane["rect"]["y"].as_u64().expect("pane top edge"),
+                pane["rect"]["x"].as_u64().expect("pane left edge"),
+                pane["pane_id"].as_str().expect("pane ID"),
+            )
+        })
+        .collect();
+    panes.sort_unstable();
+    panes.into_iter().map(|(_, _, pane_id)| pane_id).collect()
 }
 
 fn pane_x(snapshot: &Value, tab_id: &str, pane_id: &str) -> u64 {

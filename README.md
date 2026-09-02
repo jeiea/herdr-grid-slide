@@ -46,31 +46,38 @@ right place and no reorder request is needed. Moving the source tab's only pane 
 so the action ignores that case without changing the session. If Herdr declines the pane move, the
 action likewise stops without a reorder request.
 
-`to-new-workspace` moves the focused pane into a focused new workspace and places that workspace
-immediately after its source in visible `number` order. If the source was already the last
-workspace, the new workspace is already in the right place and no reorder request is needed. Moving
-the source workspace's only pane would close that workspace, so the action ignores that case without
-changing the session. Moving a tab's only pane is allowed when another tab remains in the source
-workspace. If Herdr declines the pane move, the action likewise stops without a reorder request.
+`to-new-workspace` moves the focused tab into a focused new workspace and places that workspace
+immediately after its source in visible `number` order. Herdr has no request that carries a tab
+across workspaces, so the first pane in reading order opens the new workspace and the remaining
+panes follow it in that order, after which focus returns to the pane that had it and the new tab is
+balanced like the destination of a tab-scoped move, keeping its pane order. The whole move holds the
+balance lock, so the `pane.focused` hooks it fires wait for it and then find nothing left to do. A
+custom tab label carries over, except one that spells the tab's own position number: Herdr 0.8.2's
+snapshot cannot tell it from the default label, and carrying it over would pin the new tab to a
+stale position. This comparison can go once Herdr reports whether a label is custom. If the source
+was already the last workspace, the new workspace is already in the right place and no reorder
+request is needed. Moving a workspace's only tab would close that workspace, so the action ignores
+that case without changing the session. If Herdr declines the first pane move, the action likewise
+stops without further requests.
 
 `split-pane` and `new-pane` are aliases. They split the focused pane at 50:50 along the direction
 the tab already grows in. For mixed or single-pane layouts, a pane wider than twice its height splits
 right; all others split down.
 
-`pane.focused`, successful tab-scoped moves, and successful horizontal directional boundary moves
-enter automatic balance. The plugin records the latest entered tab and its pane set in
-`HERDR_PLUGIN_STATE_DIR/balance-focus.json`; another pane focus in
-that same tab with the same panes does nothing, while a focus that arrives with a new or closed pane
--- such as the one `new-pane` creates -- balances the tab again. A tab-scoped move ignores a matching
-cached pane set once when the first snapshot after locking still focuses its expected destination.
-If that snapshot focuses another tab, the expected destination is discarded and the usual latest
-focus and cache rules apply. This makes an externally moved pane balance its destination when entered
-and leaves the source to be balanced when the user later enters it. Hook processes share a file lock,
-read the latest session snapshot after acquiring it, and keep following newer tab focus until the
-observed tab is settled.
-Internal focus events from swaps, scratch-tab moves, and rebuilding therefore collapse into the same
-run instead of starting recursive work. With no state yet, the first observed focus is treated as a
-tab entry because Herdr does not provide the previous tab.
+`pane.focused`, successful tab-scoped moves, successful multi-pane `to-new-workspace` moves, and
+successful horizontal directional boundary moves enter automatic balance. The plugin records the
+latest entered tab and its pane set in `HERDR_PLUGIN_STATE_DIR/balance-focus.json`; another pane
+focus in that same tab with the same panes does nothing, while a focus that arrives with a new or
+closed pane -- such as the one `new-pane` creates -- balances the tab again. A tab-scoped move
+ignores a matching cached pane set once when the first snapshot after locking still focuses its
+expected destination. If that snapshot focuses another tab, the expected destination is discarded
+and the usual latest focus and cache rules apply. This makes an externally moved pane balance its
+destination when entered and leaves the source to be balanced when the user later enters it. Hook
+processes share a file lock, read the latest session snapshot after acquiring it, and keep following
+newer tab focus until the observed tab is settled. Internal focus events from swaps, scratch-tab
+moves, and rebuilding therefore collapse into the same run instead of starting recursive work. With
+no state yet, the first observed focus is treated as a tab entry because Herdr does not provide the
+previous tab.
 
 If a tab-scoped or horizontal directional boundary move succeeds but automatic balance fails, the
 pane remains moved and the action fails with `pane moved, but automatic balance failed: ...`.
@@ -88,9 +95,13 @@ response, or if the subsequent reorder fails, the action fails with an error tha
 creation already completed. The new workspace remains focused and may remain at the end of the
 session.
 
-If `to-new-workspace` moves the pane but Herdr omits the created workspace ID, or the subsequent
-workspace reorder fails, the action fails with an error that says the pane move already completed.
-The pane remains in the new workspace; that workspace may remain at the end of the session.
+If `to-new-workspace` moves the first pane but Herdr omits the created tab ID, or a following pane
+cannot be moved, the action fails with an error that names the panes still in the source tab. The
+panes already moved remain in the new workspace at the end of the session. If every pane moved but
+restoring focus fails, Herdr omits the created workspace ID, or the subsequent workspace reorder
+fails, the action fails with an error that says the tab move already completed; that workspace may
+remain at the end of the session. If the tab moved but automatic balance fails, the action fails
+with `tab moved, but automatic balance failed: ...`.
 
 Automatic balance quietly skips a missing, single-pane, or zoomed tab. It records an attempted tab
 before changing its layout, so a failure does not loop on ordinary same-tab pane focus; leaving and
