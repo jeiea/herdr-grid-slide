@@ -1818,7 +1818,11 @@ fn tab_move_skips_balance_when_herdr_does_not_move_the_pane() {
     );
     assert_eq!(
         herdr.read_balance_state(),
-        json!({"paneIds": ["pane-destination"], "tabId": "tab-destination"})
+        json!({
+            "bounds": bounds(0.0, 0.0, 100.0, 40.0),
+            "paneIds": ["pane-destination"],
+            "tabId": "tab-destination",
+        })
     );
 }
 
@@ -2292,9 +2296,70 @@ fn pane_focused_balances_the_same_tab_when_its_panes_changed() {
         );
         assert_eq!(
             herdr.read_balance_state(),
-            json!({"paneIds": ["pane-a", "pane-b"], "tabId": "tab-main"}),
+            json!({
+                "bounds": bounds(0.0, 0.0, 100.0, 40.0),
+                "paneIds": ["pane-a", "pane-b"],
+                "tabId": "tab-main",
+            }),
         );
     }
+}
+
+#[test]
+fn pane_focused_balances_the_same_tab_when_its_area_changed() {
+    // Herdr sends no event when a client of another size attaches or the window
+    // is resized, so the first focus afterwards has to notice that the grid was
+    // laid out for a different shape. The tab was a row of two on the desktop; on
+    // a phone-shaped area that grid is the wrong shape and becomes a column.
+    let herdr = FakeHerdr::new(focused(
+        tab_snapshot(vec![
+            pane("pane-a", 0, 0, 50, 100),
+            pane("pane-b", 50, 0, 50, 100),
+        ]),
+        "workspace-1",
+        "tab-main",
+        "pane-b",
+    ))
+    .with_replies(
+        "layout.export",
+        [
+            export_reply(split("right", leaf("pane-a"), leaf("pane-b"))),
+            export_reply(split("down", leaf("pane-a"), leaf("pane-b"))),
+        ],
+    )
+    .with_replies("pane.move", [new_tab_reply("tab-scratch"), move_reply()]);
+    herdr.write_balance_state_with_bounds(
+        "tab-main",
+        &["pane-a", "pane-b"],
+        bounds(0.0, 0.0, 200.0, 40.0),
+    );
+
+    let run = run_on_pane_focused(&herdr, "tab-main", "pane-b");
+
+    run.assert_success();
+    // The automatic policy checks before each move that the user is still on the tab.
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            snapshot_call(),
+            move_call("pane-b", new_tab_destination()),
+            snapshot_call(),
+            move_call("pane-b", attach_destination("pane-a", "down")),
+            export_call(),
+            ratio_call(&[], 0.5),
+            snapshot_call(),
+        ]
+    );
+    assert_eq!(
+        herdr.read_balance_state(),
+        json!({
+            "bounds": bounds(0.0, 0.0, 100.0, 100.0),
+            "paneIds": ["pane-a", "pane-b"],
+            "tabId": "tab-main",
+        }),
+    );
 }
 
 #[test]
@@ -3594,11 +3659,20 @@ impl FakeHerdr {
         fs::write(self.state_path.join("focus-anchor.json"), state).unwrap();
     }
 
+    /// Records the tab as entered the way it is laid out in the current snapshot.
     fn write_balance_state(&self, tab_id: &str, pane_ids: &[&str]) {
+        self.write_balance_state_with_bounds(
+            tab_id,
+            pane_ids,
+            snapshot_bounds(&self.snapshot, tab_id),
+        );
+    }
+
+    fn write_balance_state_with_bounds(&self, tab_id: &str, pane_ids: &[&str], bounds: Value) {
         fs::create_dir_all(&self.state_path).unwrap();
         fs::write(
             self.state_path.join("balance-focus.json"),
-            json!({"paneIds": pane_ids, "tabId": tab_id}).to_string(),
+            json!({"bounds": bounds, "paneIds": pane_ids, "tabId": tab_id}).to_string(),
         )
         .unwrap();
     }
@@ -4438,6 +4512,44 @@ fn focused_layout(tab_id: &str, focused_pane_id: &str, panes: Vec<Value>) -> Val
 
 fn pane(id: &str, x: u16, y: u16, width: u16, height: u16) -> Value {
     json!({"pane_id": id, "rect": {"height": height, "width": width, "x": x, "y": y}})
+}
+
+/// The bounds the plugin records for a tab: the extent of its pane rects, or
+/// null for a tab the snapshot does not lay out.
+fn snapshot_bounds(snapshot: &Value, tab_id: &str) -> Value {
+    let rects: Vec<&Value> = snapshot["layouts"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|layout| layout["tab_id"] == tab_id)
+        .flat_map(|layout| layout["panes"].as_array().into_iter().flatten())
+        .map(|pane| &pane["rect"])
+        .collect();
+    if rects.is_empty() {
+        return Value::Null;
+    }
+    let field = |rect: &Value, name: &str| rect[name].as_f64().unwrap();
+    let min_x = rects
+        .iter()
+        .map(|rect| field(rect, "x"))
+        .fold(f64::MAX, f64::min);
+    let min_y = rects
+        .iter()
+        .map(|rect| field(rect, "y"))
+        .fold(f64::MAX, f64::min);
+    let max_x = rects
+        .iter()
+        .map(|rect| field(rect, "x") + field(rect, "width"))
+        .fold(f64::MIN, f64::max);
+    let max_y = rects
+        .iter()
+        .map(|rect| field(rect, "y") + field(rect, "height"))
+        .fold(f64::MIN, f64::max);
+    bounds(min_x, min_y, max_x - min_x, max_y - min_y)
+}
+
+fn bounds(x: f64, y: f64, width: f64, height: f64) -> Value {
+    json!({"height": height, "width": width, "x": x, "y": y})
 }
 
 fn tab(workspace_id: &str, tab_id: &str, number: u16) -> Value {

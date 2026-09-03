@@ -66,9 +66,12 @@ right; all others split down.
 
 `pane.focused`, successful tab-scoped moves, successful multi-pane `to-new-workspace` moves, and
 successful horizontal directional boundary moves enter automatic balance. The plugin records the
-latest entered tab and its pane set in `HERDR_PLUGIN_STATE_DIR/balance-focus.json`; another pane
-focus in that same tab with the same panes does nothing, while a focus that arrives with a new or
-closed pane -- such as the one `new-pane` creates -- balances the tab again. A tab-scoped move
+latest entered tab, its pane set, and the bounds of its panes in
+`HERDR_PLUGIN_STATE_DIR/balance-focus.json`; another pane focus in that same tab with the same panes
+and bounds does nothing, while a focus that arrives with a new or closed pane -- such as the one
+`new-pane` creates -- or with other bounds balances the tab again. Bounds change when the window is
+resized or a client of another size attaches, such as a phone; Herdr sends no event for either, so
+the first pane focus afterwards is what lays the tab out for the new shape. A tab-scoped move
 ignores a matching cached pane set once when the first snapshot after locking still focuses its
 expected destination. If that snapshot focuses another tab, the expected destination is discarded
 and the usual latest focus and cache rules apply. This makes an externally moved pane balance its

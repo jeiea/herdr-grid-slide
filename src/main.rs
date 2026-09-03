@@ -264,9 +264,15 @@ struct FocusAnchorState {
     y: f64,
 }
 
-#[derive(Serialize, Deserialize)]
+/// The tab the automatic balance last entered, as it was laid out then. The
+/// bounds are part of it because Herdr sends no event when the window is resized
+/// or a client of another size attaches, and the grid that suits a phone differs
+/// from the one that suited the desktop. Comparing them exactly is sound because
+/// Herdr reports whole terminal cells, so no rounding can creep in.
+#[derive(PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BalanceFocusState {
+    bounds: Option<Bounds>,
     pane_ids: Vec<String>,
     tab_id: String,
 }
@@ -277,7 +283,7 @@ struct Point {
     y: f64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
 struct Bounds {
     height: f64,
     width: f64,
@@ -928,8 +934,7 @@ fn balance_focused_pane_locked(
     mut expected_destination_tab_id: Option<&str>,
 ) -> Result<()> {
     let state_dir = lock.state_dir;
-    let mut previous =
-        read_balance_focus_state(state_dir)?.map(|state| (state.tab_id, state.pane_ids));
+    let mut previous = read_balance_focus_state(state_dir)?;
     let mut failures = Vec::new();
     loop {
         let snapshot = read_snapshot(client)?;
@@ -941,20 +946,15 @@ fn balance_focused_pane_locked(
             .iter()
             .find(|layout| layout.tab_id == tab_id);
         // A focus inside the settled tab is not a tab entry, but a new or closed
-        // pane changes the pane set and does warrant a balance.
-        let pane_ids = sorted_pane_ids(snapshot_layout);
+        // pane changes the pane set, and a resized window changes the bounds; both
+        // warrant a balance.
+        let observed = observed_balance_focus(tab_id, snapshot_layout);
         let force_balance = expected_destination_tab_id.take() == Some(tab_id);
-        if !force_balance
-            && previous
-                .as_ref()
-                .is_some_and(|(previous_tab, previous_panes)| {
-                    previous_tab == tab_id && *previous_panes == pane_ids
-                })
-        {
+        if !force_balance && previous.as_ref() == Some(&observed) {
             break;
         }
-        write_balance_focus_state(state_dir, tab_id, &pane_ids)?;
-        previous = Some((tab_id.to_owned(), pane_ids));
+        write_state_file(state_dir, BALANCE_FOCUS_STATE_FILE, &observed)?;
+        previous = Some(observed);
 
         let Some(snapshot_layout) = snapshot_layout else {
             continue;
@@ -1651,15 +1651,12 @@ fn read_balance_focus_state(state_dir: &Path) -> Result<Option<BalanceFocusState
     Ok(serde_json::from_slice(&bytes).ok())
 }
 
-fn write_balance_focus_state(state_dir: &Path, tab_id: &str, pane_ids: &[String]) -> Result<()> {
-    write_state_file(
-        state_dir,
-        BALANCE_FOCUS_STATE_FILE,
-        &BalanceFocusState {
-            pane_ids: pane_ids.to_vec(),
-            tab_id: tab_id.to_owned(),
-        },
-    )
+fn observed_balance_focus(tab_id: &str, layout: Option<&TabLayout>) -> BalanceFocusState {
+    BalanceFocusState {
+        bounds: layout.and_then(|layout| layout_bounds(layout).ok()),
+        pane_ids: sorted_pane_ids(layout),
+        tab_id: tab_id.to_owned(),
+    }
 }
 
 fn sorted_pane_ids(layout: Option<&TabLayout>) -> Vec<String> {
