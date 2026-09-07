@@ -205,6 +205,101 @@ fn to_new_workspace_carries_the_whole_tab_after_its_source_and_keeps_focus() {
     assert_eq!(panes_in_reading_order(&after, created_tab_id), moved_ids);
 }
 
+#[test]
+#[ignore = "requires Herdr 0.8.2 and starts an isolated named session"]
+fn tab_workspace_actions_keep_the_tab_independent_on_a_round_trip() {
+    let mut live = LiveHerdr::start().expect("start isolated Herdr session");
+    let source = live.create_workspace("source").expect("create source");
+    let moving = live
+        .create_tab(&source.workspace_id, "moving")
+        .expect("create moving tab");
+    let middle = live
+        .split_pane(&moving.root_pane_id, "right", true)
+        .expect("split middle");
+    let right = live
+        .split_pane(&middle, "right", true)
+        .expect("split right");
+    let target = live.create_workspace("target").expect("create target");
+    let target_last = live
+        .create_tab(&target.workspace_id, "target-last")
+        .expect("create last destination tab");
+    live.focus_workspace(&source.workspace_id)
+        .expect("focus source");
+    live.focus_tab(&moving.tab_id).expect("focus moving tab");
+    live.link_plugin().expect("link isolated plugin");
+    let before = live.snapshot().expect("snapshot before moving");
+    let terminals = [&moving.root_pane_id, &middle, &right].map(|id| terminal_id(&before, id));
+    let workspace_order = |snapshot: &Value| {
+        let mut workspaces: Vec<_> = snapshot["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|workspace| {
+                (
+                    workspace["number"].as_u64().unwrap(),
+                    workspace["workspace_id"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect();
+        workspaces.sort();
+        workspaces
+    };
+    let original_order = workspace_order(&before);
+    let mut previous_tab_id = moving.tab_id.clone();
+    for (action, destination) in [
+        ("tab-to-next-workspace", &target.workspace_id),
+        ("tab-to-previous-workspace", &source.workspace_id),
+    ] {
+        let before_move = live.snapshot().expect("snapshot before action");
+        let existing_tabs: Vec<_> = before_move["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|tab| tab["workspace_id"] == *destination)
+            .map(|tab| tab["tab_id"].as_str().unwrap().to_owned())
+            .collect();
+        live.invoke_action(action)
+            .expect("invoke registered tab move action");
+        let after = live.snapshot().expect("snapshot after action");
+        let panes = terminals
+            .each_ref()
+            .map(|id| pane_by_terminal_id(&after, id));
+        let moved_ids = panes.map(|pane| pane["pane_id"].as_str().unwrap());
+        let moved_tab = panes[0]["tab_id"].as_str().unwrap();
+        for pane in panes {
+            assert_eq!(pane["workspace_id"], *destination);
+            assert_eq!(pane["tab_id"], moved_tab);
+        }
+        assert_eq!(focused_pane_id(&after), moved_ids[2]);
+        assert_eq!(tab(&after, moved_tab)["label"], "moving");
+        assert_eq!(panes_in_reading_order(&after, moved_tab), moved_ids);
+        assert_eq!(pane_ids_in_tab(&after, moved_tab).len(), 3);
+        assert!(pane_ids_in_tab(&after, &previous_tab_id).is_empty());
+        let destination_tabs: Vec<_> = after["tabs"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|tab| tab["workspace_id"] == *destination)
+            .map(|tab| tab["tab_id"].as_str().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            destination_tabs,
+            existing_tabs
+                .into_iter()
+                .chain([moved_tab.to_owned()])
+                .collect::<Vec<_>>()
+        );
+        for fixture in [&source, &target, &target_last] {
+            assert_eq!(
+                pane_ids_in_tab(&after, &fixture.tab_id),
+                BTreeSet::from([fixture.root_pane_id.clone()])
+            );
+        }
+        assert_eq!(workspace_order(&after), original_order);
+        previous_tab_id = moved_tab.to_owned();
+    }
+}
+
 struct LiveHerdr {
     herdr: PathBuf,
     session: String,

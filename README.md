@@ -1,14 +1,14 @@
 # herdr-move-pane
 
 Move the current Herdr pane cyclically to the adjacent tab or workspace, create a tab or workspace
-immediately after the current one, move the pane to a new tab or workspace, reorder workspaces,
-navigate or move panes directionally in visual order across container boundaries, split a pane, or
-lay a tab out as an even grid. Directional moves swap panes within a tab and move them across tabs or
-workspaces at an edge. Scoped pane moves split an existing destination on the right at a 50:50 ratio
-and keep focus. Move, split, and new pane actions do not balance layouts themselves, except that a
-successful tab-scoped move or horizontal directional boundary move starts automatic balance before
-returning. It balances the destination if that tab is still focused after the balance lock is
-acquired.
+immediately after the current one, move the pane to a new tab or the whole tab to another workspace,
+reorder workspaces, navigate or move panes directionally in visual order across container
+boundaries, split a pane, or lay a tab out as an even grid. Directional moves swap panes within a
+tab and move them across tabs or workspaces at an edge. Scoped pane moves split an existing
+destination on the right at a 50:50 ratio and keep focus. Move, split, and new pane actions do not
+balance layouts themselves, except that a successful tab-scoped move, multi-pane whole-tab move, or
+horizontal directional boundary move starts automatic balance before returning. It balances the
+destination if that tab is still focused after the balance lock is acquired.
 
 Workspace-scoped pane moves target the active tab of the adjacent workspace and use visible
 workspace `number` order. Tab-scoped pane moves stay in the current workspace and follow displayed
@@ -56,15 +56,22 @@ custom tab label carries over, except one that spells the tab's own position num
 snapshot cannot tell it from the default label, and carrying it over would pin the new tab to a
 stale position. This comparison can go once Herdr reports whether a label is custom. If the source
 was already the last workspace, the new workspace is already in the right place and no reorder
-request is needed. Moving a workspace's only tab would close that workspace, so the action ignores
-that case without changing the session. If Herdr declines the first pane move, the action likewise
-stops without further requests.
+request is needed. Herdr closes a workspace when its only tab moves away, so the plugin leaves that
+tab in place to keep the source workspace open. If Herdr declines the first pane move, the action
+likewise stops without further requests.
+
+`tab-to-next-workspace` and `tab-to-previous-workspace` (`move-tab-workspace next|previous`) move
+the whole focused tab into a new tab at the end of the adjacent existing workspace in visible
+`number` order, wrapping at either end. Existing destination tabs remain separate. With only one
+workspace, or only one tab in the source workspace, the actions do nothing.
+Reading order, labels, focus restoration, balance locking, and first-move refusal follow
+`to-new-workspace` above; no workspace is created or reordered.
 
 `split-pane` and `new-pane` are aliases. They split the focused pane at 50:50 along the direction
 the tab already grows in. For mixed or single-pane layouts, a pane wider than twice its height splits
 right; all others split down.
 
-`pane.focused`, successful tab-scoped moves, successful multi-pane `to-new-workspace` moves, and
+`pane.focused`, successful tab-scoped moves, successful multi-pane whole-tab workspace moves, and
 successful horizontal directional boundary moves enter automatic balance. The plugin records the
 latest entered tab, its pane set, and the bounds of its panes in
 `HERDR_PLUGIN_STATE_DIR/balance-focus.json`; another pane focus in that same tab with the same panes
@@ -98,13 +105,13 @@ response, or if the subsequent reorder fails, the action fails with an error tha
 creation already completed. The new workspace remains focused and may remain at the end of the
 session.
 
-If `to-new-workspace` moves the first pane but Herdr omits the created tab ID, or a following pane
-cannot be moved, the action fails with an error that names the panes still in the source tab. The
-panes already moved remain in the new workspace at the end of the session. If every pane moved but
-restoring focus fails, Herdr omits the created workspace ID, or the subsequent workspace reorder
-fails, the action fails with an error that says the tab move already completed; that workspace may
-remain at the end of the session. If the tab moved but automatic balance fails, the action fails
-with `tab moved, but automatic balance failed: ...`.
+If `to-new-workspace` or `move-tab-workspace` moves the first pane but Herdr omits the created tab
+ID, or a following pane cannot be moved, the action fails with an error that names the panes still
+in the source tab. The panes already moved remain in the destination tab. If every pane moved but
+restoring focus fails, the action reports that the tab move already completed. For
+`to-new-workspace`, a missing created workspace ID or failed workspace reorder also reports
+completion; the new workspace may remain at the end of the session. If the tab moved but automatic
+balance fails, the action fails with `tab moved, but automatic balance failed: ...`.
 
 Automatic balance quietly skips a missing, single-pane, or zoomed tab. It records an attempted tab
 before changing its layout, so a failure does not loop on ordinary same-tab pane focus; leaving and
@@ -181,8 +188,8 @@ mise run check
 ```
 
 The default checks keep the fast, deterministic `FakeHerdr` integration suite for socket requests,
-branch coverage, errors, and races. To also smoke-test representative directional moves against an
-isolated Herdr 0.8.2 named session, run:
+branch coverage, errors, and races. To also smoke-test representative directional and whole-tab
+workspace moves against an isolated Herdr 0.8.2 named session, run:
 
 ```sh
 mise run live-herdr
@@ -196,6 +203,8 @@ The plugin exposes these actions:
 
 - `jeiea.move-pane.to-next-workspace`
 - `jeiea.move-pane.to-previous-workspace`
+- `jeiea.move-pane.tab-to-next-workspace`
+- `jeiea.move-pane.tab-to-previous-workspace`
 - `jeiea.move-pane.to-next-tab`
 - `jeiea.move-pane.to-previous-tab`
 - `jeiea.move-pane.new-tab`

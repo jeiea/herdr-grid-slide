@@ -50,7 +50,7 @@ enum Command {
     CreateTab,
     CreateWorkspace,
     MoveToNewTab,
-    MoveToNewWorkspace,
+    MoveTabWorkspace(Option<MoveDirection>),
     MoveWorkspace(MoveDirection),
     Focus(PaneDirection),
     MoveDirectionally(PaneDirection),
@@ -369,7 +369,7 @@ fn run() -> Result<()> {
         command,
         Command::Focus(_)
             | Command::MoveDirectionally(_)
-            | Command::MoveToNewWorkspace
+            | Command::MoveTabWorkspace(_)
             | Command::Move {
                 scope: Scope::Tab,
                 ..
@@ -386,7 +386,9 @@ fn run() -> Result<()> {
         Command::CreateTab => create_tab_to_right(&context, &mut client),
         Command::CreateWorkspace => create_workspace_after_current(&context, &mut client),
         Command::MoveToNewTab => move_pane_to_new_tab(&context, &mut client),
-        Command::MoveToNewWorkspace => move_tab_to_new_workspace(&context, &mut client),
+        Command::MoveTabWorkspace(direction) => {
+            move_tab_workspace(&context, direction, &mut client)
+        }
         Command::MoveWorkspace(direction) => move_workspace(&context, direction, &mut client),
         Command::CreatePane => create_pane(&context, &mut client),
         Command::OnPaneFocused => balance_focused_pane(&context, &mut client, None),
@@ -402,7 +404,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
             "new-workspace" => Ok(Command::CreateWorkspace),
             "split-pane" | "new-pane" => Ok(Command::CreatePane),
             "to-new-tab" => Ok(Command::MoveToNewTab),
-            "to-new-workspace" => Ok(Command::MoveToNewWorkspace),
+            "to-new-workspace" => Ok(Command::MoveTabWorkspace(None)),
             "on-pane-focused" => Ok(Command::OnPaneFocused),
             "balance" => Ok(Command::Balance),
             _ => Err(usage()),
@@ -413,6 +415,9 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
         [operation, direction] if operation == "move" => {
             Ok(Command::MoveDirectionally(parse_pane_direction(direction)?))
         }
+        [operation, direction] if operation == "move-tab-workspace" => Ok(
+            Command::MoveTabWorkspace(Some(parse_move_direction(direction)?)),
+        ),
         [operation, direction] if operation == "move-workspace" => {
             Ok(Command::MoveWorkspace(parse_move_direction(direction)?))
         }
@@ -450,7 +455,7 @@ fn parse_pane_direction(direction: &str) -> Result<PaneDirection> {
 }
 
 fn usage() -> String {
-    "usage: herdr-move-pane <workspace|tab> <next|previous> | move-workspace <next|previous> | <focus|move> <direction> | new-tab | new-workspace | to-new-tab | to-new-workspace | split-pane | new-pane | balance | on-pane-focused".into()
+    "usage: herdr-move-pane <workspace|tab> <next|previous> | move-workspace <next|previous> | move-tab-workspace <next|previous> | <focus|move> <direction> | new-tab | new-workspace | to-new-tab | to-new-workspace | split-pane | new-pane | balance | on-pane-focused".into()
 }
 
 fn read_context(needs_state_dir: bool) -> Result<Context> {
@@ -589,16 +594,20 @@ fn move_pane_to_new_tab(context: &Context, client: &mut SocketClient) -> Result<
     Ok(())
 }
 
-/// Moves the focused tab into a focused new workspace. herdr has no request that
+/// Moves the focused tab into a new tab in another workspace. herdr has no request that
 /// carries a tab across workspaces -- `tab.move` only reorders within one -- so the
-/// first pane in reading order opens the workspace and the rest of the tab follows it
+/// first pane in reading order opens the destination tab and the rest of the tab follows it
 /// one pane at a time, in that order, so the balanced tab keeps its pane order. Focus
 /// then returns to the pane that had it. The whole move runs under the balance lock:
 /// the `pane.focused` hooks it fires along the way wait for it, then find the tab
 /// settled, instead of balancing a half-moved tab and handing focus back to the
-/// leader. The only tab of a workspace stays put, because moving it would close that
-/// workspace.
-fn move_tab_to_new_workspace(context: &Context, client: &mut SocketClient) -> Result<()> {
+/// leader. Plugin policy keeps the only tab of a workspace in place so the source
+/// workspace stays open.
+fn move_tab_workspace(
+    context: &Context,
+    direction: Option<MoveDirection>,
+    client: &mut SocketClient,
+) -> Result<()> {
     let lock = lock_balance(context)?;
     let snapshot = read_snapshot(client)?;
     let navigation = navigation_context(context, &snapshot);
@@ -611,12 +620,29 @@ fn move_tab_to_new_workspace(context: &Context, client: &mut SocketClient) -> Re
     let source = current_position(&workspaces, navigation.workspace_id, |workspace| {
         workspace.workspace_id.as_str()
     })?;
+    let label = custom_label(&tabs[tab_position].label, tab_position);
+    let destination = if let Some(direction) = direction {
+        if workspaces.len() <= 1 {
+            return Ok(());
+        }
+        let target = adjacent(
+            &workspaces,
+            navigation.workspace_id,
+            direction,
+            |workspace| workspace.workspace_id.as_str(),
+        )?;
+        let mut destination = json!({"type": "new_tab", "workspace_id": target.workspace_id});
+        if let Some(label) = label {
+            destination["label"] = label.into();
+        }
+        destination
+    } else {
+        new_workspace_destination(label)
+    };
     let order = reading_order(find_layout(&snapshot, navigation.tab_id)?);
     let (leader, following) = order
         .split_first()
         .ok_or_else(|| format!("{} has no panes", navigation.tab_id))?;
-    let destination =
-        new_workspace_destination(custom_label(&tabs[tab_position].label, tab_position));
     let moved = request_pane_move(client, leader, destination, true)?;
     if !moved.changed {
         return Ok(());
@@ -627,12 +653,12 @@ fn move_tab_to_new_workspace(context: &Context, client: &mut SocketClient) -> Re
             .request("pane.focus", json!({"pane_id": navigation.pane_id}))
             .map_err(|error| {
                 format!(
-                    "tab moved to a new workspace, but refocusing {} failed: {error}",
+                    "tab moved, but refocusing {} failed: {error}",
                     navigation.pane_id
                 )
             })?;
     }
-    if source + 1 < workspaces.len() {
+    if direction.is_none() && source + 1 < workspaces.len() {
         let created_workspace = moved.created_workspace.as_ref().ok_or(
             "tab moved to a new workspace, but herdr api pane.move response is missing the created workspace id",
         )?;
@@ -683,7 +709,7 @@ fn follow_leader<'a>(
             "remain"
         };
         format!(
-            "{leader} moved to a new workspace, but {problem}; {} {verb} in {source_tab_id}",
+            "{leader} moved, but {problem}; {} {verb} in {source_tab_id}",
             remaining.join(", ")
         )
     };

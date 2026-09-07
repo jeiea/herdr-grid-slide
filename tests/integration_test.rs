@@ -18,9 +18,63 @@ type Reply = Result<Value, String>;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[test]
+fn moves_tabs_in_visible_workspace_order_and_wraps_both_ends() {
+    for (direction, number, target) in [
+        ("next", 2, "workspace-last"),
+        ("previous", 2, "workspace-first"),
+        ("next", 4, "workspace-first"),
+        ("previous", 0, "workspace-last"),
+    ] {
+        let mut before = tab_to_new_workspace_before_snapshot();
+        before["workspaces"][0]["number"] = number.into();
+        before["layouts"][0]["panes"]
+            .as_array_mut()
+            .unwrap()
+            .truncate(1);
+        let run = FakeHerdr::new(before)
+            .with_replies("pane.move", [new_tab_reply("tab-created")])
+            .run(
+                "workspace-stale",
+                "tab-stale",
+                "pane-stale",
+                &["move-tab-workspace", direction],
+            );
+        run.assert_success();
+        assert_eq!(
+            run.requests,
+            [
+                snapshot_call(),
+                move_to_new_workspace_call_with(
+                    "pane-live",
+                    json!({"type": "new_tab", "workspace_id": target})
+                )
+            ]
+        );
+    }
+}
+
+#[test]
+fn ignores_moving_a_tab_when_there_is_only_one_workspace() {
+    for direction in ["next", "previous"] {
+        let mut before = single_pane_tab_snapshot();
+        before["workspaces"].as_array_mut().unwrap().truncate(1);
+        before["tabs"].as_array_mut().unwrap().truncate(2);
+        before["layouts"].as_array_mut().unwrap().truncate(2);
+        let run = FakeHerdr::new(before).run(
+            "workspace-source",
+            "tab-source",
+            "pane-moving",
+            &["move-tab-workspace", direction],
+        );
+        run.assert_success();
+        assert_eq!(run.requests, [snapshot_call()]);
+    }
+}
+
+#[test]
 fn moves_the_focused_tab_to_a_new_workspace_immediately_after_its_source() {
     let before = tab_to_new_workspace_before_snapshot();
-    let after = tab_to_new_workspace_after_snapshot();
+    let after = tab_to_new_workspace_after_snapshot(None);
     let herdr = FakeHerdr::new(before.clone())
         .with_replies(
             "session.snapshot",
@@ -68,118 +122,104 @@ fn moves_the_focused_tab_to_a_new_workspace_immediately_after_its_source() {
 
 #[test]
 fn waits_for_the_balance_lock_before_moving_the_tab() {
-    // A pane.focused hook from an earlier action may still hold the lock; moving
-    // while it balances would let it hand focus back to the leader halfway through.
-    // The hold only has to outlast the plugin's start-up, after which an unlocked
-    // plugin would already have sent its first request. A freshly built binary
-    // starts slowly the first time macOS validates it, so it is started once before.
-    const HOLD: Duration = Duration::from_millis(300);
-    let before = tab_to_new_workspace_before_snapshot();
-    let after = tab_to_new_workspace_after_snapshot();
-    let herdr = FakeHerdr::new(before.clone())
-        .with_replies(
-            "session.snapshot",
-            [
-                snapshot_reply(before),
-                snapshot_reply(after.clone()),
-                snapshot_reply(after),
-            ],
-        )
-        .with_replies(
-            "pane.move",
-            [new_workspace_reply("workspace-created"), move_reply()],
-        )
-        .with_replies(
-            "layout.export",
-            [export_reply(split(
-                "right",
-                leaf("pane-live"),
-                leaf("pane-stays"),
-            ))],
-        );
-    herdr.warm_up_binary();
-    let held = herdr.hold_balance_lock();
-
-    let run = thread::scope(|scope| {
-        let run = scope.spawn(|| {
-            herdr.run(
-                "workspace-source",
-                "tab-source",
-                "pane-live",
-                &["to-new-workspace"],
+    for (target, arguments) in tab_workspace_commands("workspace-last") {
+        // A pane.focused hook from an earlier action may still hold the lock; moving
+        // while it balances would let it hand focus back to the leader halfway through.
+        // The hold only has to outlast the plugin's start-up, after which an unlocked
+        // plugin would already have sent its first request. A freshly built binary
+        // starts slowly the first time macOS validates it, so it is started once before.
+        const HOLD: Duration = Duration::from_millis(300);
+        let before = tab_to_new_workspace_before_snapshot();
+        let after = tab_to_new_workspace_after_snapshot(target);
+        let herdr = FakeHerdr::new(before.clone())
+            .with_replies(
+                "session.snapshot",
+                [
+                    snapshot_reply(before),
+                    snapshot_reply(after.clone()),
+                    snapshot_reply(after),
+                ],
             )
-        });
-        thread::sleep(HOLD);
-        drop(held);
-        run.join().unwrap()
-    });
+            .with_replies("pane.move", [tab_workspace_reply(target), move_reply()])
+            .with_replies(
+                "layout.export",
+                [export_reply(split(
+                    "right",
+                    leaf("pane-live"),
+                    leaf("pane-stays"),
+                ))],
+            );
+        herdr.warm_up_binary();
+        let held = herdr.hold_balance_lock();
 
-    run.assert_success();
-    assert_eq!(herdr.premature_requests(), 0);
-    assert_eq!(
-        run.requests,
-        [
+        let run = thread::scope(|scope| {
+            let run =
+                scope.spawn(|| herdr.run("workspace-source", "tab-source", "pane-live", arguments));
+            thread::sleep(HOLD);
+            drop(held);
+            run.join().unwrap()
+        });
+
+        run.assert_success();
+        assert_eq!(herdr.premature_requests(), 0);
+        let expected = vec![
             snapshot_call(),
-            move_to_new_workspace_call("pane-live"),
+            move_to_new_workspace_call_with("pane-live", tab_workspace_destination(target, None)),
             move_call("pane-stays", join_destination("tab-created", "pane-moved")),
             workspace_move_call("workspace-created", 2),
             snapshot_call(),
             export_call_for("tab-created"),
             ratio_call_for("tab-created", &[], 0.5),
             snapshot_call(),
-        ]
-    );
+        ];
+        assert_eq!(run.requests, tab_workspace_calls(target, expected));
+    }
 }
 
 #[test]
 fn refocuses_the_original_pane_when_it_was_not_first_in_reading_order() {
-    let before = focused(
-        tab_to_new_workspace_before_snapshot(),
-        "workspace-source",
-        "tab-source",
-        "pane-stays",
-    );
-    let after = focused(
-        tab_to_new_workspace_after_snapshot(),
-        "workspace-created",
-        "tab-created",
-        "pane-stays",
-    );
-    let herdr = FakeHerdr::new(before.clone())
-        .with_replies(
-            "session.snapshot",
-            [
-                snapshot_reply(before),
-                snapshot_reply(after.clone()),
-                snapshot_reply(after),
-            ],
-        )
-        .with_replies(
-            "pane.move",
-            [new_workspace_reply("workspace-created"), move_reply()],
-        )
-        .with_replies(
-            "layout.export",
-            [export_reply(split(
-                "right",
-                leaf("pane-live"),
-                leaf("pane-stays"),
-            ))],
+    for (target, arguments) in tab_workspace_commands("workspace-last") {
+        let mut before = focused(
+            tab_to_new_workspace_before_snapshot(),
+            "workspace-source",
+            "tab-source",
+            "pane-stays",
         );
+        before["tabs"][0]["label"] = "build".into();
+        let after = focused(
+            tab_to_new_workspace_after_snapshot(target),
+            target.unwrap_or("workspace-created"),
+            "tab-created",
+            "pane-stays",
+        );
+        let herdr = FakeHerdr::new(before.clone())
+            .with_replies(
+                "session.snapshot",
+                [
+                    snapshot_reply(before),
+                    snapshot_reply(after.clone()),
+                    snapshot_reply(after),
+                ],
+            )
+            .with_replies("pane.move", [tab_workspace_reply(target), move_reply()])
+            .with_replies(
+                "layout.export",
+                [export_reply(split(
+                    "right",
+                    leaf("pane-live"),
+                    leaf("pane-stays"),
+                ))],
+            );
 
-    let run = herdr.run(
-        "workspace-source",
-        "tab-source",
-        "pane-stays",
-        &["to-new-workspace"],
-    );
+        let run = herdr.run("workspace-source", "tab-source", "pane-stays", arguments);
 
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
+        run.assert_success();
+        let expected = vec![
             snapshot_call(),
-            move_to_new_workspace_call("pane-live"),
+            move_to_new_workspace_call_with(
+                "pane-live",
+                tab_workspace_destination(target, Some("build")),
+            ),
             move_call("pane-stays", join_destination("tab-created", "pane-moved")),
             focus_call("pane-stays"),
             workspace_move_call("workspace-created", 2),
@@ -187,45 +227,38 @@ fn refocuses_the_original_pane_when_it_was_not_first_in_reading_order() {
             export_call_for("tab-created"),
             ratio_call_for("tab-created", &[], 0.5),
             snapshot_call(),
-        ]
-    );
+        ];
+        assert_eq!(run.requests, tab_workspace_calls(target, expected));
+    }
 }
 
 #[test]
 fn reports_when_the_tab_moved_but_refocusing_failed() {
-    let before = focused(
-        tab_to_new_workspace_before_snapshot(),
-        "workspace-source",
-        "tab-source",
-        "pane-stays",
-    );
-    let herdr = FakeHerdr::new(before)
-        .with_replies(
-            "pane.move",
-            [new_workspace_reply("workspace-created"), move_reply()],
-        )
-        .with_replies("pane.focus", [Err("pane not found".to_owned())]);
+    for (target, arguments) in tab_workspace_commands("workspace-last") {
+        let before = focused(
+            tab_to_new_workspace_before_snapshot(),
+            "workspace-source",
+            "tab-source",
+            "pane-stays",
+        );
+        let herdr = FakeHerdr::new(before)
+            .with_replies("pane.move", [tab_workspace_reply(target), move_reply()])
+            .with_replies("pane.focus", [Err("pane not found".to_owned())]);
 
-    let run = herdr.run(
-        "workspace-source",
-        "tab-source",
-        "pane-stays",
-        &["to-new-workspace"],
-    );
+        let run = herdr.run("workspace-source", "tab-source", "pane-stays", arguments);
 
-    assert_eq!(
-        run.assert_failure(),
-        "tab moved to a new workspace, but refocusing pane-stays failed: pane.focus failed: pane not found\n"
-    );
-    assert_eq!(
-        run.requests,
-        [
+        assert_eq!(
+            run.assert_failure(),
+            "tab moved, but refocusing pane-stays failed: pane.focus failed: pane not found\n"
+        );
+        let expected = vec![
             snapshot_call(),
-            move_to_new_workspace_call("pane-live"),
+            move_to_new_workspace_call_with("pane-live", tab_workspace_destination(target, None)),
             move_call("pane-stays", join_destination("tab-created", "pane-moved")),
             focus_call("pane-stays"),
-        ]
-    );
+        ];
+        assert_eq!(run.requests, expected);
+    }
 }
 
 #[test]
@@ -269,55 +302,53 @@ fn leaves_a_new_workspace_at_the_end_when_its_source_was_last() {
 
 #[test]
 fn ignores_moving_the_only_tab_out_of_its_workspace() {
-    let herdr = FakeHerdr::new(focused(
-        snapshot(
-            json!([layout(
-                "tab-source",
-                vec![
-                    pane("pane-live", 0, 0, 50, 100),
-                    pane("pane-stays", 50, 0, 50, 100),
-                ],
-            )]),
-            json!([tab("workspace-source", "tab-source", 1)]),
-            json!([workspace("workspace-source", "tab-source", 1)]),
-        ),
-        "workspace-source",
-        "tab-source",
-        "pane-live",
-    ));
+    for arguments in [
+        &["to-new-workspace"][..],
+        &["move-tab-workspace", "next"][..],
+    ] {
+        let herdr = FakeHerdr::new(focused(
+            snapshot(
+                json!([layout(
+                    "tab-source",
+                    vec![
+                        pane("pane-live", 0, 0, 50, 100),
+                        pane("pane-stays", 50, 0, 50, 100),
+                    ],
+                )]),
+                json!([tab("workspace-source", "tab-source", 1)]),
+                json!([
+                    workspace("workspace-source", "tab-source", 1),
+                    workspace("workspace-last", "tab-last", 2)
+                ]),
+            ),
+            "workspace-source",
+            "tab-source",
+            "pane-live",
+        ));
 
-    let run = herdr.run(
-        "workspace-source",
-        "tab-source",
-        "pane-live",
-        &["to-new-workspace"],
-    );
+        let run = herdr.run("workspace-source", "tab-source", "pane-live", arguments);
 
-    run.assert_success();
-    assert_eq!(run.requests, [snapshot_call()]);
+        run.assert_success();
+        assert_eq!(run.requests, [snapshot_call()]);
+    }
 }
 
 #[test]
 fn moves_a_single_pane_tab_without_balancing() {
-    let herdr = FakeHerdr::new(single_pane_tab_snapshot())
-        .with_replies("pane.move", [new_workspace_reply("workspace-created")]);
+    for (target, arguments) in tab_workspace_commands("workspace-next") {
+        let herdr = FakeHerdr::new(single_pane_tab_snapshot())
+            .with_replies("pane.move", [tab_workspace_reply(target)]);
 
-    let run = herdr.run(
-        "workspace-source",
-        "tab-source",
-        "pane-moving",
-        &["to-new-workspace"],
-    );
+        let run = herdr.run("workspace-source", "tab-source", "pane-moving", arguments);
 
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
+        run.assert_success();
+        let expected = vec![
             snapshot_call(),
-            move_to_new_workspace_call("pane-moving"),
+            move_to_new_workspace_call_with("pane-moving", tab_workspace_destination(target, None)),
             workspace_move_call("workspace-created", 1),
-        ]
-    );
+        ];
+        assert_eq!(run.requests, tab_workspace_calls(target, expected));
+    }
 }
 
 #[test]
@@ -346,30 +377,28 @@ fn keeps_a_custom_tab_label_on_the_new_workspace() {
 }
 
 #[test]
-fn stops_when_herdr_declines_the_new_workspace_move() {
-    let herdr = FakeHerdr::new(focused(
-        standard_snapshot(),
-        "workspace-2",
-        "tab-2-1",
-        "pane-2-1-top-left",
-    ))
-    .with_replies("pane.move", [no_op_move_reply("source_changed")]);
+fn stops_when_herdr_declines_the_tab_workspace_move() {
+    for (target, arguments) in tab_workspace_commands("workspace-3") {
+        let herdr = FakeHerdr::new(focused(
+            standard_snapshot(),
+            "workspace-2",
+            "tab-2-1",
+            "pane-2-1-top-left",
+        ))
+        .with_replies("pane.move", [no_op_move_reply("source_changed")]);
 
-    let run = herdr.run(
-        "workspace-2",
-        "tab-2-1",
-        "pane-2-1-top-left",
-        &["to-new-workspace"],
-    );
+        let run = herdr.run("workspace-2", "tab-2-1", "pane-2-1-top-left", arguments);
 
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
+        run.assert_success();
+        let expected = vec![
             snapshot_call(),
-            move_to_new_workspace_call("pane-2-1-top-left"),
-        ]
-    );
+            move_to_new_workspace_call_with(
+                "pane-2-1-top-left",
+                tab_workspace_destination(target, None),
+            ),
+        ];
+        assert_eq!(run.requests, expected);
+    }
 }
 
 #[test]
@@ -395,56 +424,54 @@ fn reports_when_a_moved_pane_response_omits_the_created_workspace_id() {
 }
 
 #[test]
-fn reports_when_a_new_workspace_move_response_omits_the_created_tab_id() {
-    let herdr = FakeHerdr::new(tab_to_new_workspace_before_snapshot())
-        .with_replies("pane.move", [move_reply()]);
+fn reports_when_a_tab_workspace_move_response_omits_the_created_tab_id() {
+    for (target, arguments) in tab_workspace_commands("workspace-last") {
+        let herdr = FakeHerdr::new(tab_to_new_workspace_before_snapshot())
+            .with_replies("pane.move", [move_reply()]);
 
-    let run = herdr.run(
-        "workspace-source",
-        "tab-source",
-        "pane-live",
-        &["to-new-workspace"],
-    );
+        let run = herdr.run("workspace-source", "tab-source", "pane-live", arguments);
 
-    assert_eq!(
-        run.assert_failure(),
-        "pane-live moved to a new workspace, but herdr api pane.move response is missing the created tab id; pane-stays remains in tab-source\n"
-    );
-    assert_eq!(
-        run.requests,
-        [snapshot_call(), move_to_new_workspace_call("pane-live")]
-    );
+        assert_eq!(
+            run.assert_failure(),
+            "pane-live moved, but herdr api pane.move response is missing the created tab id; pane-stays remains in tab-source\n"
+        );
+        assert_eq!(
+            run.requests,
+            [
+                snapshot_call(),
+                move_to_new_workspace_call_with(
+                    "pane-live",
+                    tab_workspace_destination(target, None)
+                )
+            ]
+        );
+    }
 }
 
 #[test]
-fn reports_when_a_following_pane_could_not_join_the_new_workspace() {
-    let herdr = FakeHerdr::new(tab_to_new_workspace_before_snapshot()).with_replies(
-        "pane.move",
-        [
-            new_workspace_reply("workspace-created"),
-            Err("pane not found".to_owned()),
-        ],
-    );
+fn reports_when_a_following_pane_could_not_join_the_destination_workspace() {
+    for (target, arguments) in tab_workspace_commands("workspace-last") {
+        let herdr = FakeHerdr::new(tab_to_new_workspace_before_snapshot()).with_replies(
+            "pane.move",
+            [
+                tab_workspace_reply(target),
+                Err("pane not found".to_owned()),
+            ],
+        );
 
-    let run = herdr.run(
-        "workspace-source",
-        "tab-source",
-        "pane-live",
-        &["to-new-workspace"],
-    );
+        let run = herdr.run("workspace-source", "tab-source", "pane-live", arguments);
 
-    assert_eq!(
-        run.assert_failure(),
-        "pane-live moved to a new workspace, but moving pane-stays after it failed: pane.move failed: pane not found; pane-stays remains in tab-source\n"
-    );
-    assert_eq!(
-        run.requests,
-        [
+        assert_eq!(
+            run.assert_failure(),
+            "pane-live moved, but moving pane-stays after it failed: pane.move failed: pane not found; pane-stays remains in tab-source\n"
+        );
+        let expected = vec![
             snapshot_call(),
-            move_to_new_workspace_call("pane-live"),
+            move_to_new_workspace_call_with("pane-live", tab_workspace_destination(target, None)),
             move_call("pane-stays", join_destination("tab-created", "pane-moved")),
-        ]
-    );
+        ];
+        assert_eq!(run.requests, expected);
+    }
 }
 
 #[test]
@@ -499,46 +526,38 @@ fn reports_when_the_tab_moved_but_the_new_workspace_could_not_be_repositioned() 
 
 #[test]
 fn reports_when_the_tab_moved_but_automatic_balance_failed() {
-    let before = tab_to_new_workspace_before_snapshot();
-    let after = tab_to_new_workspace_after_snapshot();
-    let herdr = FakeHerdr::new(before.clone())
-        .with_replies(
-            "session.snapshot",
-            [
-                snapshot_reply(before),
-                snapshot_reply(after.clone()),
-                snapshot_reply(after),
-            ],
-        )
-        .with_replies(
-            "pane.move",
-            [new_workspace_reply("workspace-created"), move_reply()],
-        )
-        .with_replies("layout.export", [Err("tab is gone".to_owned())]);
+    for (target, arguments) in tab_workspace_commands("workspace-last") {
+        let before = tab_to_new_workspace_before_snapshot();
+        let after = tab_to_new_workspace_after_snapshot(target);
+        let herdr = FakeHerdr::new(before.clone())
+            .with_replies(
+                "session.snapshot",
+                [
+                    snapshot_reply(before),
+                    snapshot_reply(after.clone()),
+                    snapshot_reply(after),
+                ],
+            )
+            .with_replies("pane.move", [tab_workspace_reply(target), move_reply()])
+            .with_replies("layout.export", [Err("tab is gone".to_owned())]);
 
-    let run = herdr.run(
-        "workspace-source",
-        "tab-source",
-        "pane-live",
-        &["to-new-workspace"],
-    );
+        let run = herdr.run("workspace-source", "tab-source", "pane-live", arguments);
 
-    assert_eq!(
-        run.assert_failure(),
-        "tab moved, but automatic balance failed: could not automatically balance tab-created: layout.export failed: tab is gone\n"
-    );
-    assert_eq!(
-        run.requests,
-        [
+        assert_eq!(
+            run.assert_failure(),
+            "tab moved, but automatic balance failed: could not automatically balance tab-created: layout.export failed: tab is gone\n"
+        );
+        let expected = vec![
             snapshot_call(),
-            move_to_new_workspace_call("pane-live"),
+            move_to_new_workspace_call_with("pane-live", tab_workspace_destination(target, None)),
             move_call("pane-stays", join_destination("tab-created", "pane-moved")),
             workspace_move_call("workspace-created", 2),
             snapshot_call(),
             export_call_for("tab-created"),
             snapshot_call(),
-        ]
-    );
+        ];
+        assert_eq!(run.requests, tab_workspace_calls(target, expected));
+    }
 }
 
 #[test]
@@ -3823,6 +3842,43 @@ fn standard_snapshot() -> Value {
     snapshot(standard_layouts(), standard_tabs(), standard_workspaces())
 }
 
+fn tab_workspace_commands(target: &str) -> [(Option<&str>, &'static [&'static str]); 2] {
+    [
+        (None, &["to-new-workspace"]),
+        (Some(target), &["move-tab-workspace", "next"]),
+    ]
+}
+
+fn tab_workspace_destination(target: Option<&str>, label: Option<&str>) -> Value {
+    let mut destination = match target {
+        Some(workspace_id) => json!({"type": "new_tab", "workspace_id": workspace_id}),
+        None => json!({"type": "new_workspace"}),
+    };
+    if let Some(label) = label {
+        destination[if target.is_some() {
+            "label"
+        } else {
+            "tab_label"
+        }] = label.into();
+    }
+    destination
+}
+
+fn tab_workspace_reply(target: Option<&str>) -> Reply {
+    match target {
+        Some(_) => new_tab_reply("tab-created"),
+        None => new_workspace_reply("workspace-created"),
+    }
+}
+
+// Only a newly created workspace is repositioned after the source.
+fn tab_workspace_calls(target: Option<&str>, calls: Vec<Call>) -> Vec<Call> {
+    calls
+        .into_iter()
+        .filter(|call| target.is_none() || call.method != "workspace.move")
+        .collect()
+}
+
 /// A two-pane tab beside another tab, so moving the whole tab leaves its workspace
 /// open. Workspace array order differs from visible `number` order, so the source's
 /// visible insertion slot is 2 rather than its array slot 1.
@@ -3859,10 +3915,10 @@ fn tab_to_new_workspace_before_snapshot() -> Value {
     )
 }
 
-/// The session after both panes reached the created workspace, before the plugin
+/// The session after both panes reached the destination workspace, before the plugin
 /// has balanced its uneven split.
-fn tab_to_new_workspace_after_snapshot() -> Value {
-    focused(
+fn tab_to_new_workspace_after_snapshot(existing: Option<&str>) -> Value {
+    let mut after = focused(
         snapshot(
             json!([
                 layout(
@@ -3892,7 +3948,19 @@ fn tab_to_new_workspace_after_snapshot() -> Value {
         "workspace-created",
         "tab-created",
         "pane-live",
-    )
+    );
+    if let Some(workspace_id) = existing {
+        after["focused_workspace_id"] = workspace_id.into();
+        after["tabs"][3]["workspace_id"] = workspace_id.into();
+        after["workspaces"].as_array_mut().unwrap().remove(2);
+        after["workspaces"][2]["number"] = 3.into();
+        for workspace in after["workspaces"].as_array_mut().unwrap() {
+            if workspace["workspace_id"] == workspace_id {
+                workspace["active_tab_id"] = "tab-created".into();
+            }
+        }
+    }
+    after
 }
 
 /// A single-pane tab with a sibling tab, which moves as a whole with one request.
