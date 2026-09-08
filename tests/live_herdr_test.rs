@@ -300,6 +300,126 @@ fn tab_workspace_actions_keep_the_tab_independent_on_a_round_trip() {
     }
 }
 
+#[test]
+#[ignore = "requires Herdr 0.8.2 and starts an isolated named session"]
+fn only_tab_actions_close_the_source_and_preserve_all_panes() {
+    for (action, pane_count) in [
+        ("tab-to-next-workspace", 1),
+        ("tab-to-next-workspace", 2),
+        ("tab-to-previous-workspace", 1),
+        ("tab-to-previous-workspace", 2),
+    ] {
+        let mut live = LiveHerdr::start().expect("start isolated Herdr session");
+        let first = live
+            .create_workspace("first")
+            .expect("create first workspace");
+        let created = live
+            .create_workspace("second")
+            .expect("create second workspace");
+        let (source, target) = if action == "tab-to-next-workspace" {
+            (first, created)
+        } else {
+            (created, first)
+        };
+        live.focus_workspace(&source.workspace_id)
+            .expect("focus source");
+        live.run_json(["tab", "rename", &source.tab_id, "moving"])
+            .expect("label source tab");
+        let mut original_ids = vec![source.root_pane_id.clone()];
+        if pane_count == 2 {
+            original_ids.push(
+                live.split_pane(&source.root_pane_id, "right", true)
+                    .expect("split last pane"),
+            );
+        }
+        live.link_plugin().expect("link isolated plugin");
+        let before = live.snapshot().expect("snapshot before move");
+        assert_eq!(before["workspaces"].as_array().unwrap().len(), 2);
+        assert_eq!(focused_pane_id(&before), *original_ids.last().unwrap());
+        assert_eq!(
+            workspace_number(&before, &target.workspace_id),
+            if action == "tab-to-next-workspace" {
+                2
+            } else {
+                1
+            }
+        );
+        let terminals: Vec<_> = original_ids
+            .iter()
+            .map(|id| terminal_id(&before, id))
+            .collect();
+        let target_terminal = terminal_id(&before, &target.root_pane_id);
+        live.invoke_action(action).expect("move only tab");
+        let after = live.snapshot().expect("snapshot after move");
+        assert_eq!(after["workspaces"].as_array().unwrap().len(), 1);
+        assert_eq!(after["workspaces"][0]["workspace_id"], target.workspace_id);
+        assert_eq!(workspace_number(&after, &target.workspace_id), 1);
+        assert!(
+            !after["tabs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tab| tab["tab_id"] == source.tab_id)
+        );
+        assert!(
+            !after["layouts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|layout| layout["tab_id"] == source.tab_id)
+        );
+        let moved: Vec<_> = terminals
+            .iter()
+            .map(|id| pane_by_terminal_id(&after, id))
+            .collect();
+        let moved_tab = moved[0]["tab_id"].as_str().unwrap();
+        let moved_ids: Vec<_> = moved
+            .iter()
+            .map(|pane| pane["pane_id"].as_str().unwrap())
+            .collect();
+        for (pane, original_id) in moved.iter().zip(&original_ids) {
+            assert_eq!(pane["workspace_id"], target.workspace_id);
+            assert_eq!(pane["tab_id"], moved_tab);
+            assert_ne!(pane["pane_id"], *original_id);
+        }
+        assert_eq!(focused_pane_id(&after), *moved_ids.last().unwrap());
+        assert_eq!(tab(&after, moved_tab)["label"], "moving");
+        assert_eq!(panes_in_reading_order(&after, moved_tab), moved_ids);
+        assert_eq!(pane_ids_in_tab(&after, moved_tab).len(), pane_count);
+        assert_eq!(
+            after["tabs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|tab| tab["tab_id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            [&target.tab_id, moved_tab]
+        );
+        assert_eq!(
+            pane_ids_in_tab(&after, &target.tab_id),
+            BTreeSet::from([target.root_pane_id.clone()])
+        );
+        assert_eq!(terminal_id(&after, &target.root_pane_id), target_terminal);
+        if pane_count == 2 {
+            let layout = after["layouts"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|layout| layout["tab_id"] == moved_tab)
+                .unwrap();
+            assert_eq!(layout["splits"][0]["ratio"], 0.5);
+        }
+        for no_op in ["tab-to-next-workspace", "tab-to-previous-workspace"] {
+            live.invoke_action(no_op)
+                .expect("ignore move with one workspace");
+            let unchanged = live.snapshot().expect("snapshot after ignored move");
+            for field in ["workspaces", "tabs", "layouts", "focused_pane_id"] {
+                assert_eq!(unchanged[field], after[field], "{no_op}: {field}");
+            }
+        }
+    }
+}
+
 struct LiveHerdr {
     herdr: PathBuf,
     session: String,

@@ -63,9 +63,10 @@ likewise stops without further requests.
 `tab-to-next-workspace` and `tab-to-previous-workspace` (`move-tab-workspace next|previous`) move
 the whole focused tab into a new tab at the end of the adjacent existing workspace in visible
 `number` order, wrapping at either end. Existing destination tabs remain separate. With only one
-workspace, or only one tab in the source workspace, the actions do nothing.
+workspace, the actions do nothing. If the source has only one tab, Herdr closes the source
+workspace when its last pane moves to the destination.
 Reading order, labels, focus restoration, balance locking, and first-move refusal follow
-`to-new-workspace` above; no workspace is created or reordered.
+`to-new-workspace` above; the destination is an existing workspace.
 
 `split-pane` and `new-pane` are aliases. They split the focused pane at 50:50 along the direction
 the tab already grows in. For mixed or single-pane layouts, a pane wider than twice its height splits

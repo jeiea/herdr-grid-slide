@@ -601,8 +601,8 @@ fn move_pane_to_new_tab(context: &Context, client: &mut SocketClient) -> Result<
 /// then returns to the pane that had it. The whole move runs under the balance lock:
 /// the `pane.focused` hooks it fires along the way wait for it, then find the tab
 /// settled, instead of balancing a half-moved tab and handing focus back to the
-/// leader. Plugin policy keeps the only tab of a workspace in place so the source
-/// workspace stays open.
+/// leader. Moving the only tab to an existing workspace lets Herdr close the source
+/// when its last pane leaves. A new-workspace move keeps the only tab in place.
 fn move_tab_workspace(
     context: &Context,
     direction: Option<MoveDirection>,
@@ -612,7 +612,7 @@ fn move_tab_workspace(
     let snapshot = read_snapshot(client)?;
     let navigation = navigation_context(context, &snapshot);
     let tabs = tabs_in_display_order(&snapshot, navigation.workspace_id);
-    if tabs.len() <= 1 {
+    if direction.is_none() && tabs.len() <= 1 {
         return Ok(());
     }
     let tab_position = current_position(&tabs, navigation.tab_id, |tab| tab.tab_id.as_str())?;
