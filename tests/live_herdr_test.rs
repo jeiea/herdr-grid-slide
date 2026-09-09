@@ -16,7 +16,7 @@ const ACTION_TIMEOUT: Duration = Duration::from_secs(10);
 static SESSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
-#[ignore = "requires Herdr 0.8.2 and starts an isolated named session"]
+#[ignore = "requires Herdr and starts an isolated named session"]
 fn move_right_swaps_panes_in_the_same_tab_and_keeps_focus() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let source = live
@@ -53,7 +53,7 @@ fn move_right_swaps_panes_in_the_same_tab_and_keeps_focus() {
 }
 
 #[test]
-#[ignore = "requires Herdr 0.8.2 and starts an isolated named session"]
+#[ignore = "requires Herdr and starts an isolated named session"]
 fn move_right_crosses_into_the_next_tab_and_keeps_focus() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let source = live
@@ -87,7 +87,7 @@ fn move_right_crosses_into_the_next_tab_and_keeps_focus() {
 }
 
 #[test]
-#[ignore = "requires Herdr 0.8.2 and starts an isolated named session"]
+#[ignore = "requires Herdr and starts an isolated named session"]
 fn move_down_crosses_into_the_next_workspaces_active_tab_and_keeps_focus() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let source = live
@@ -139,7 +139,7 @@ fn move_down_crosses_into_the_next_workspaces_active_tab_and_keeps_focus() {
 }
 
 #[test]
-#[ignore = "requires Herdr 0.8.2 and starts an isolated named session"]
+#[ignore = "requires Herdr and starts an isolated named session"]
 fn to_new_workspace_carries_the_whole_tab_after_its_source_and_keeps_focus() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let source = live
@@ -206,7 +206,7 @@ fn to_new_workspace_carries_the_whole_tab_after_its_source_and_keeps_focus() {
 }
 
 #[test]
-#[ignore = "requires Herdr 0.8.2 and starts an isolated named session"]
+#[ignore = "requires Herdr and starts an isolated named session"]
 fn tab_workspace_actions_keep_the_tab_independent_on_a_round_trip() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let source = live.create_workspace("source").expect("create source");
@@ -301,7 +301,7 @@ fn tab_workspace_actions_keep_the_tab_independent_on_a_round_trip() {
 }
 
 #[test]
-#[ignore = "requires Herdr 0.8.2 and starts an isolated named session"]
+#[ignore = "requires Herdr and starts an isolated named session"]
 fn only_tab_actions_close_the_source_and_preserve_all_panes() {
     for (action, pane_count) in [
         ("tab-to-next-workspace", 1),
@@ -503,10 +503,10 @@ impl LiveHerdr {
     fn require_version(&self) -> Result<(), String> {
         let output = self.run_raw(["--version"])?;
         let version = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        if version != HERDR_VERSION {
-            return Err(format!(
-                "live smoke requires {HERDR_VERSION}, found {version:?}"
-            ));
+        let expected =
+            std::env::var("HERDR_TEST_VERSION").unwrap_or_else(|_| HERDR_VERSION.to_owned());
+        if version != expected {
+            return Err(format!("live smoke requires {expected}, found {version:?}"));
         }
         Ok(())
     }
