@@ -21,7 +21,7 @@ cargo_version=$(awk '
 ' Cargo.toml)
 cargo_lock_version=$(awk '
   /^\[\[package\]\]$/ { package = 1; root = 0; next }
-  package && /^name *= *"herdr-move-pane"$/ { root = 1; next }
+  package && /^name *= *"herdr-grid-slide"$/ { root = 1; next }
   root && /^version *=/ {
     value = $0
     sub(/^[^=]*= *"/, "", value)

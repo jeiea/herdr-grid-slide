@@ -1,5 +1,5 @@
-id = "jeiea.move-pane"
-name = "Move Pane"
+id = "jeiea.grid-slide"
+name = "Grid Slide"
 version = "0.1.0"
 min_herdr_version = "0.8.0"
 description = "Move tabs, panes or focus across tabs and workspaces, create tabs and workspaces, reorder workspaces, add panes and balance tab layouts"
@@ -12,140 +12,140 @@ command = ["./scripts/build-plugin.sh"]
 id = "to-next-workspace"
 title = "Move pane to next workspace"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "workspace", "next"]
+command = ["./bin/herdr-grid-slide", "workspace", "next"]
 
 [[actions]]
 id = "to-previous-workspace"
 title = "Move pane to previous workspace"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "workspace", "previous"]
+command = ["./bin/herdr-grid-slide", "workspace", "previous"]
 
 [[actions]]
 id = "tab-to-next-workspace"
 title = "Move tab to next workspace"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "move-tab-workspace", "next"]
+command = ["./bin/herdr-grid-slide", "move-tab-workspace", "next"]
 
 [[actions]]
 id = "tab-to-previous-workspace"
 title = "Move tab to previous workspace"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "move-tab-workspace", "previous"]
+command = ["./bin/herdr-grid-slide", "move-tab-workspace", "previous"]
 
 [[actions]]
 id = "to-next-tab"
 title = "Move pane to next tab"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "tab", "next"]
+command = ["./bin/herdr-grid-slide", "tab", "next"]
 
 [[actions]]
 id = "to-previous-tab"
 title = "Move pane to previous tab"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "tab", "previous"]
+command = ["./bin/herdr-grid-slide", "tab", "previous"]
 
 [[actions]]
 id = "new-tab"
 title = "Create tab to the right"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "new-tab"]
+command = ["./bin/herdr-grid-slide", "new-tab"]
 
 [[actions]]
 id = "new-workspace"
 title = "Create workspace after current"
 contexts = ["workspace"]
-command = ["./bin/herdr-move-pane", "new-workspace"]
+command = ["./bin/herdr-grid-slide", "new-workspace"]
 
 [[actions]]
 id = "to-new-tab"
 title = "Move pane to new tab"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "to-new-tab"]
+command = ["./bin/herdr-grid-slide", "to-new-tab"]
 
 [[actions]]
 id = "to-new-workspace"
 title = "Move tab to new workspace"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "to-new-workspace"]
+command = ["./bin/herdr-grid-slide", "to-new-workspace"]
 
 [[actions]]
 id = "move-workspace-next"
 title = "Move workspace itself to next position"
 contexts = ["workspace"]
-command = ["./bin/herdr-move-pane", "move-workspace", "next"]
+command = ["./bin/herdr-grid-slide", "move-workspace", "next"]
 
 [[actions]]
 id = "move-workspace-previous"
 title = "Move workspace itself to previous position"
 contexts = ["workspace"]
-command = ["./bin/herdr-move-pane", "move-workspace", "previous"]
+command = ["./bin/herdr-grid-slide", "move-workspace", "previous"]
 
 [[actions]]
 id = "focus-left"
 title = "Focus left pane or wrap to previous tab"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "focus", "left"]
+command = ["./bin/herdr-grid-slide", "focus", "left"]
 
 [[actions]]
 id = "focus-down"
 title = "Focus lower pane or wrap to next workspace"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "focus", "down"]
+command = ["./bin/herdr-grid-slide", "focus", "down"]
 
 [[actions]]
 id = "focus-up"
 title = "Focus upper pane or wrap to previous workspace"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "focus", "up"]
+command = ["./bin/herdr-grid-slide", "focus", "up"]
 
 [[actions]]
 id = "focus-right"
 title = "Focus right pane or wrap to next tab"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "focus", "right"]
+command = ["./bin/herdr-grid-slide", "focus", "right"]
 
 [[actions]]
 id = "move-left"
 title = "Move pane left"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "move", "left"]
+command = ["./bin/herdr-grid-slide", "move", "left"]
 
 [[actions]]
 id = "move-down"
 title = "Move pane down"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "move", "down"]
+command = ["./bin/herdr-grid-slide", "move", "down"]
 
 [[actions]]
 id = "move-up"
 title = "Move pane up"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "move", "up"]
+command = ["./bin/herdr-grid-slide", "move", "up"]
 
 [[actions]]
 id = "move-right"
 title = "Move pane right"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "move", "right"]
+command = ["./bin/herdr-grid-slide", "move", "right"]
 
 [[actions]]
 id = "split-pane"
 title = "Split pane"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "split-pane"]
+command = ["./bin/herdr-grid-slide", "split-pane"]
 
 [[actions]]
 id = "new-pane"
 title = "Create pane"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "new-pane"]
+command = ["./bin/herdr-grid-slide", "new-pane"]
 
 [[actions]]
 id = "balance"
 title = "Balance panes into even grid"
 contexts = ["pane"]
-command = ["./bin/herdr-move-pane", "balance"]
+command = ["./bin/herdr-grid-slide", "balance"]
 
 [[events]]
 on = "pane.focused"
-command = ["./bin/herdr-move-pane", "on-pane-focused"]
+command = ["./bin/herdr-grid-slide", "on-pane-focused"]

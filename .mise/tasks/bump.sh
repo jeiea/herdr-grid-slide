@@ -103,7 +103,7 @@ awk -v next_version="$next_version" '
 cp -p "$ROOT/Cargo.lock" "$lock_stage"
 awk -v next_version="$next_version" '
   /^\[\[package\]\]$/ { package = 1; root = 0 }
-  package && /^name *= *"herdr-move-pane"$/ { root = 1 }
+  package && /^name *= *"herdr-grid-slide"$/ { root = 1 }
   root && /^version *=/ {
     sub(/"[^"]+"/, "\"" next_version "\"")
     changed++

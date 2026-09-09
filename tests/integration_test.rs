@@ -3491,7 +3491,7 @@ fn manifest_exposes_the_create_workspace_after_current_action() {
 id = "new-workspace"
 title = "Create workspace after current"
 contexts = ["workspace"]
-command = ["./bin/herdr-move-pane", "new-workspace"]"#
+command = ["./bin/herdr-grid-slide", "new-workspace"]"#
     ));
 }
 
@@ -3506,7 +3506,7 @@ fn manifest_exposes_all_directional_pane_move_actions() {
                 "id = \"move-{direction}\"\n\
                  title = \"Move pane {direction}\"\n\
                  contexts = [\"pane\"]\n\
-                 command = [\"./bin/herdr-move-pane\", \"move\", \"{direction}\"]"
+                 command = [\"./bin/herdr-grid-slide\", \"move\", \"{direction}\"]"
             )),
             "missing move-{direction} action"
         );
@@ -3537,7 +3537,7 @@ fn every_manifest_entrypoint_is_a_command_the_plugin_accepts() {
         "a manifest entrypoint whose command does not run the plugin binary would slip past this test"
     );
     for arguments in commands {
-        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-move-pane"))
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-grid-slide"))
             .args(&arguments)
             .env_clear()
             .output()
@@ -3624,7 +3624,7 @@ impl FakeHerdr {
         let socket_path = self.directory.join("herdr.sock");
         let stop = Arc::new(AtomicBool::new(false));
         let server = self.serve(&socket_path, Arc::clone(&stop));
-        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-move-pane"))
+        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-grid-slide"))
             .args(args)
             .env("HERDR_PANE_ID", pane_id)
             .env("HERDR_PLUGIN_STATE_DIR", &self.state_path)
@@ -3689,7 +3689,7 @@ impl FakeHerdr {
 
     /// Runs the plugin once without arguments, which fails before any socket use.
     fn warm_up_binary(&self) {
-        ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-move-pane"))
+        ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-grid-slide"))
             .output()
             .unwrap();
     }
@@ -4796,7 +4796,7 @@ fn manifest_commands(manifest: &str) -> Vec<Vec<String>> {
         .filter(|command| {
             command
                 .first()
-                .is_some_and(|program| program.ends_with("/herdr-move-pane"))
+                .is_some_and(|program| program.ends_with("/herdr-grid-slide"))
         })
         .map(|command| command[1..].to_vec())
         .collect()

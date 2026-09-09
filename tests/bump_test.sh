@@ -2,7 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/herdr-move-pane-bump.XXXXXX")
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/herdr-grid-slide-bump.XXXXXX")
 trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
 CURRENT_VERSION=$(awk -F ' *= *' '
   $1 == "version" { value = $2; gsub(/"/, "", value); print value; exit }
@@ -80,7 +80,7 @@ awk -v next_version="$NEXT_VERSION" '
 ' "$PROJECT/original/Cargo.toml" >"$PROJECT/expected-Cargo.toml"
 awk -v next_version="$NEXT_VERSION" '
   /^\[\[package\]\]$/ { package = 1; root = 0 }
-  package && /^name *= *"herdr-move-pane"$/ { root = 1 }
+  package && /^name *= *"herdr-grid-slide"$/ { root = 1 }
   root && /^version *=/ { sub(/"[^"]+"/, "\"" next_version "\"") }
   { print }
 ' "$PROJECT/original/Cargo.lock" >"$PROJECT/expected-Cargo.lock"

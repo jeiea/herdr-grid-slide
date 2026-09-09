@@ -45,6 +45,6 @@ actual release workflow dispatch have not yet been exercised. Immediately after 
 - [ ] Require pull requests and block force pushes or deletion of the default branch.
 - [ ] Run the **Release** workflow once and confirm it creates `v0.1.0` and all five assets.
 - [ ] Confirm the release has build-provenance attestations for all four binaries.
-- [ ] On a machine without Rust, run `herdr plugin install jeiea/herdr-move-pane` with Herdr 0.8 or
+- [ ] On a machine without Rust, run `herdr plugin install jeiea/herdr-grid-slide` with Herdr 0.8 or
   later and invoke at least one action.
 - [ ] Reinstall with `--ref v0.1.0` and confirm the pinned-version path works.

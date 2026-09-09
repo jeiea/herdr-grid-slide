@@ -1,4 +1,4 @@
-# herdr-move-pane
+# Grid Slide
 
 Move the current Herdr pane cyclically to the adjacent tab or workspace, create a tab or workspace
 immediately after the current one, move the pane to a new tab or the whole tab to another workspace,
@@ -146,7 +146,7 @@ Requires Herdr 0.8 or later and `curl`. Rust is not required. The installer uses
 or the preinstalled `shasum` on macOS to verify the download.
 
 ```sh
-herdr plugin install jeiea/herdr-move-pane
+herdr plugin install jeiea/herdr-grid-slide
 ```
 
 Herdr clones the repository and runs the plugin's build command. The command downloads the raw
@@ -157,7 +157,7 @@ plugin source.
 To pin a released version, install its Git tag:
 
 ```sh
-herdr plugin install --ref v0.1.0 jeiea/herdr-move-pane
+herdr plugin install --ref v0.1.0 jeiea/herdr-grid-slide
 ```
 
 Supported targets:
@@ -178,8 +178,8 @@ Build and apply the local plugin for both the first link and later source change
 mise run apply-local
 ```
 
-The task builds `target/release/herdr-move-pane` with the locked dependencies, atomically copies it
-to `bin/herdr-move-pane`, and links the checkout. An existing `bin` copy remains available if the
+The task builds `target/release/herdr-grid-slide` with the locked dependencies, atomically copies it
+to `bin/herdr-grid-slide`, and links the checkout. An existing `bin` copy remains available if the
 build or replacement fails and is independent of Cargo's disposable `target` directory.
 
 Run the local quality checks with:
@@ -202,29 +202,29 @@ repository `bin/` directory or user plugin links.
 
 The plugin exposes these actions:
 
-- `jeiea.move-pane.to-next-workspace`
-- `jeiea.move-pane.to-previous-workspace`
-- `jeiea.move-pane.tab-to-next-workspace`
-- `jeiea.move-pane.tab-to-previous-workspace`
-- `jeiea.move-pane.to-next-tab`
-- `jeiea.move-pane.to-previous-tab`
-- `jeiea.move-pane.new-tab`
-- `jeiea.move-pane.new-workspace`
-- `jeiea.move-pane.to-new-tab`
-- `jeiea.move-pane.to-new-workspace`
-- `jeiea.move-pane.move-workspace-next`
-- `jeiea.move-pane.move-workspace-previous`
-- `jeiea.move-pane.focus-left`
-- `jeiea.move-pane.focus-down`
-- `jeiea.move-pane.focus-up`
-- `jeiea.move-pane.focus-right`
-- `jeiea.move-pane.move-left`
-- `jeiea.move-pane.move-down`
-- `jeiea.move-pane.move-up`
-- `jeiea.move-pane.move-right`
-- `jeiea.move-pane.split-pane`
-- `jeiea.move-pane.new-pane`
-- `jeiea.move-pane.balance`
+- `jeiea.grid-slide.to-next-workspace`
+- `jeiea.grid-slide.to-previous-workspace`
+- `jeiea.grid-slide.tab-to-next-workspace`
+- `jeiea.grid-slide.tab-to-previous-workspace`
+- `jeiea.grid-slide.to-next-tab`
+- `jeiea.grid-slide.to-previous-tab`
+- `jeiea.grid-slide.new-tab`
+- `jeiea.grid-slide.new-workspace`
+- `jeiea.grid-slide.to-new-tab`
+- `jeiea.grid-slide.to-new-workspace`
+- `jeiea.grid-slide.move-workspace-next`
+- `jeiea.grid-slide.move-workspace-previous`
+- `jeiea.grid-slide.focus-left`
+- `jeiea.grid-slide.focus-down`
+- `jeiea.grid-slide.focus-up`
+- `jeiea.grid-slide.focus-right`
+- `jeiea.grid-slide.move-left`
+- `jeiea.grid-slide.move-down`
+- `jeiea.grid-slide.move-up`
+- `jeiea.grid-slide.move-right`
+- `jeiea.grid-slide.split-pane`
+- `jeiea.grid-slide.new-pane`
+- `jeiea.grid-slide.balance`
 
 Release maintenance and the checks that remain after making this repository public are documented in
 [`docs/releasing.md`](docs/releasing.md).

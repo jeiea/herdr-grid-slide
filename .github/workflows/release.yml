@@ -79,7 +79,7 @@ jobs:
           TARGET: ${{ matrix.target }}
           VERSION: ${{ needs.prepare.outputs.version }}
         run: |
-          binary="target/$TARGET/release/herdr-move-pane"
+          binary="target/$TARGET/release/herdr-grid-slide"
           "$binary" 2>&1 | grep -F "usage:"
           case "$TARGET" in
             *-unknown-linux-musl)
@@ -90,12 +90,12 @@ jobs:
               esac
               ;;
           esac
-          cp "$binary" "herdr-move-pane-v${VERSION}-${TARGET}"
+          cp "$binary" "herdr-grid-slide-v${VERSION}-${TARGET}"
       - name: Upload binary
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: binary-${{ matrix.target }}
-          path: herdr-move-pane-v${{ needs.prepare.outputs.version }}-${{ matrix.target }}
+          path: herdr-grid-slide-v${{ needs.prepare.outputs.version }}-${{ matrix.target }}
           if-no-files-found: error
           retention-days: 1
 
@@ -126,14 +126,14 @@ jobs:
             aarch64-unknown-linux-musl \
             x86_64-unknown-linux-musl
           do
-            test -f "dist/herdr-move-pane-v${VERSION}-${target}"
+            test -f "dist/herdr-grid-slide-v${VERSION}-${target}"
           done
           cd dist
-          sha256sum herdr-move-pane-* > SHA256SUMS
+          sha256sum herdr-grid-slide-* > SHA256SUMS
       - name: Attest build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-path: dist/herdr-move-pane-*
+          subject-path: dist/herdr-grid-slide-*
       - name: Create draft release and tag
         env:
           GH_TOKEN: ${{ github.token }}
@@ -148,7 +148,7 @@ jobs:
             --generate-notes \
             --title "$TAG"
           gh release upload "$TAG" \
-            dist/herdr-move-pane-* \
+            dist/herdr-grid-slide-* \
             dist/SHA256SUMS
       - name: Verify and publish release
         env:
@@ -161,10 +161,10 @@ jobs:
           trap 'rm -f "$expected" "$actual"' EXIT
           printf '%s\n' \
             SHA256SUMS \
-            "herdr-move-pane-v${VERSION}-aarch64-apple-darwin" \
-            "herdr-move-pane-v${VERSION}-aarch64-unknown-linux-musl" \
-            "herdr-move-pane-v${VERSION}-x86_64-apple-darwin" \
-            "herdr-move-pane-v${VERSION}-x86_64-unknown-linux-musl" \
+            "herdr-grid-slide-v${VERSION}-aarch64-apple-darwin" \
+            "herdr-grid-slide-v${VERSION}-aarch64-unknown-linux-musl" \
+            "herdr-grid-slide-v${VERSION}-x86_64-apple-darwin" \
+            "herdr-grid-slide-v${VERSION}-x86_64-unknown-linux-musl" \
             | sort > "$expected"
           gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
             --jq '.assets[].name' | sort > "$actual"

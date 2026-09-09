@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "herdr-move-pane"
+name = "herdr-grid-slide"
 version = "0.1.0"
 dependencies = [
  "serde",

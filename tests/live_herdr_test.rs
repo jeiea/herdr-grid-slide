@@ -8,7 +8,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 const HERDR_VERSION: &str = "herdr 0.8.2";
-const PLUGIN_ID: &str = "jeiea.move-pane";
+const PLUGIN_ID: &str = "jeiea.grid-slide";
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
 const ACTION_TIMEOUT: Duration = Duration::from_secs(10);
@@ -451,7 +451,7 @@ impl LiveHerdr {
         let runtime_dir = root.join("runtime");
         let config_path = root.join("herdr-config.toml");
         let plugin_root = root.join("plugin");
-        let plugin_binary = plugin_root.join("bin/herdr-move-pane");
+        let plugin_binary = plugin_root.join("bin/herdr-grid-slide");
         let session = name;
         let herdr = PathBuf::from("herdr");
 
@@ -476,7 +476,7 @@ impl LiveHerdr {
         )
         .map_err(|error| format!("copy plugin manifest: {error}"))?;
         fs::copy(
-            Path::new(env!("CARGO_BIN_EXE_herdr-move-pane")),
+            Path::new(env!("CARGO_BIN_EXE_herdr-grid-slide")),
             &plugin_binary,
         )
         .map_err(|error| format!("copy test plugin binary: {error}"))?;

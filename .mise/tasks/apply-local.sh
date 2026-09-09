@@ -2,9 +2,9 @@
 set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
-SOURCE="$ROOT/target/release/herdr-move-pane"
-DESTINATION="$ROOT/bin/herdr-move-pane"
-STAGED="$ROOT/bin/.herdr-move-pane.$$"
+SOURCE="$ROOT/target/release/herdr-grid-slide"
+DESTINATION="$ROOT/bin/herdr-grid-slide"
+STAGED="$ROOT/bin/.herdr-grid-slide.$$"
 
 trap 'rm -f "$STAGED"' EXIT HUP INT TERM
 

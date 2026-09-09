@@ -2,7 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/herdr-move-pane-apply-local.XXXXXX")
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/herdr-grid-slide-apply-local.XXXXXX")
 trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
 
 REAL_CP=$(command -v cp)
@@ -16,8 +16,8 @@ cat >"$FAKE_BIN/cargo" <<'EOF'
 printf '%s\n' "$*" >>"$CARGO_CALLS"
 [ "${FAIL_AT:-}" != build ] || exit 1
 mkdir -p target/release
-printf '%s\n' "$BINARY_CONTENT" >target/release/herdr-move-pane
-"$REAL_CHMOD" +x target/release/herdr-move-pane
+printf '%s\n' "$BINARY_CONTENT" >target/release/herdr-grid-slide
+"$REAL_CHMOD" +x target/release/herdr-grid-slide
 EOF
 
 cat >"$FAKE_BIN/cp" <<'EOF'
@@ -34,7 +34,7 @@ EOF
 
 cat >"$FAKE_BIN/herdr" <<'EOF'
 #!/bin/sh
-test "$(cat bin/herdr-move-pane)" = "$BINARY_CONTENT"
+test "$(cat bin/herdr-grid-slide)" = "$BINARY_CONTENT"
 printf '%s|%s\n' "$PWD" "$*" >>"$HERDR_CALLS"
 EOF
 chmod +x "$FAKE_BIN/cargo" "$FAKE_BIN/cp" "$FAKE_BIN/mv" "$FAKE_BIN/herdr"
@@ -57,7 +57,7 @@ run_apply_local() {
 }
 
 assert_no_staged_binary() {
-  for staged in "$PROJECT"/bin/.herdr-move-pane.*
+  for staged in "$PROJECT"/bin/.herdr-grid-slide.*
   do
     if [ -e "$staged" ]; then
       echo "staged binary was not removed: $staged" >&2
@@ -70,28 +70,28 @@ assert_failed_without_replacing_or_linking() {
   failure=$1
   prepare_project "failure-$failure"
   mkdir -p "$PROJECT/bin"
-  printf '%s\n' existing >"$PROJECT/bin/herdr-move-pane"
+  printf '%s\n' existing >"$PROJECT/bin/herdr-grid-slide"
 
   if run_apply_local replacement "$failure"; then
     echo "$failure failure unexpectedly succeeded" >&2
     exit 1
   fi
 
-  test "$(cat "$PROJECT/bin/herdr-move-pane")" = existing
+  test "$(cat "$PROJECT/bin/herdr-grid-slide")" = existing
   test ! -s "$HERDR_CALLS"
   assert_no_staged_binary
 }
 
 prepare_project success
 run_apply_local first
-test "$(cat "$PROJECT/bin/herdr-move-pane")" = first
-test "$(cat "$PROJECT/target/release/herdr-move-pane")" = first
-test -x "$PROJECT/bin/herdr-move-pane"
+test "$(cat "$PROJECT/bin/herdr-grid-slide")" = first
+test "$(cat "$PROJECT/target/release/herdr-grid-slide")" = first
+test -x "$PROJECT/bin/herdr-grid-slide"
 assert_no_staged_binary
 
 run_apply_local second
-test "$(cat "$PROJECT/bin/herdr-move-pane")" = second
-test "$(cat "$PROJECT/target/release/herdr-move-pane")" = second
+test "$(cat "$PROJECT/bin/herdr-grid-slide")" = second
+test "$(cat "$PROJECT/target/release/herdr-grid-slide")" = second
 test "$(awk 'END { print NR }' "$CARGO_CALLS")" = 2
 test "$(awk 'END { print NR }' "$HERDR_CALLS")" = 2
 test "$(sort -u "$CARGO_CALLS")" = "build --locked --release"

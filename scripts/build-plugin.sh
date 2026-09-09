@@ -3,7 +3,7 @@ set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 MANIFEST="$ROOT/herdr-plugin.toml"
-DESTINATION="$ROOT/bin/herdr-move-pane"
+DESTINATION="$ROOT/bin/herdr-grid-slide"
 
 version=$(awk -F ' *= *' '$1 == "version" { value = $2; gsub(/"/, "", value); print value; exit }' "$MANIFEST")
 if [ -z "$version" ]; then
@@ -23,14 +23,14 @@ case "$(uname -s):$(uname -m)" in
 esac
 
 mkdir -p "$ROOT/bin"
-staged="$ROOT/bin/.herdr-move-pane.$$"
-temporary=$(mktemp -d "${TMPDIR:-/tmp}/herdr-move-pane-download.XXXXXX")
+staged="$ROOT/bin/.herdr-grid-slide.$$"
+temporary=$(mktemp -d "${TMPDIR:-/tmp}/herdr-grid-slide-download.XXXXXX")
 trap 'rm -f "$staged"; rm -rf "$temporary"' EXIT HUP INT TERM
 
-asset="herdr-move-pane-v${version}-${target}"
-base_url=${HERDR_MOVE_PANE_RELEASE_BASE_URL:-"https://github.com/jeiea/herdr-move-pane/releases/download/v${version}"}
+asset="herdr-grid-slide-v${version}-${target}"
+base_url=${HERDR_GRID_SLIDE_RELEASE_BASE_URL:-"https://github.com/jeiea/herdr-grid-slide/releases/download/v${version}"}
 
-if [ -z "${HERDR_MOVE_PANE_RELEASE_BASE_URL:-}" ]; then
+if [ -z "${HERDR_GRID_SLIDE_RELEASE_BASE_URL:-}" ]; then
   curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \
     "$base_url/SHA256SUMS" --output "$temporary/SHA256SUMS"
   curl --proto '=https' --tlsv1.2 --fail --location --silent --show-error \

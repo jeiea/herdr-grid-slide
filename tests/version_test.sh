@@ -2,7 +2,7 @@
 set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
-TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/herdr-move-pane-version.XXXXXX")
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/herdr-grid-slide-version.XXXXXX")
 trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
 
 cp "$ROOT/Cargo.toml" "$TMP_DIR/Cargo.toml"
@@ -15,7 +15,7 @@ NEXT_VERSION=$(printf '%s\n' "$VERSION" | awk -F . '{ print $1 "." $2 "." $3 + 1
 
 awk -v next_version="$NEXT_VERSION" '
   /^\[\[package\]\]$/ { package = 1; root = 0 }
-  package && /^name *= *"herdr-move-pane"$/ { root = 1 }
+  package && /^name *= *"herdr-grid-slide"$/ { root = 1 }
   root && !changed && /^version *=/ {
     sub(/"[^"]+"/, "\"" next_version "\"")
     changed = 1
