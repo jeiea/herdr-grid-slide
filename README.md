@@ -2,11 +2,39 @@
 
 A plugin born from the idea of focusing and moving panes with hjkl.
 
+## Support
+
+Minimum Herdr version: **0.8.0**. Release targets: macOS and Linux, each on arm64 and x86_64.
+The six live scenarios passed on macOS arm64 with Herdr 0.8.0 and 0.8.2; other platforms and
+versions have not been exercised in that run. See [verification details](docs/testing.md#recorded-results).
+
 ## Install
+
+Installation requires a published release.
 
 ```sh
 herdr plugin install jeiea/herdr-grid-slide
 ```
+
+Requires Herdr, git, and the installer tools: `sh`, `curl`, `awk`, basic Unix utilities,
+and either `sha256sum` or `shasum`. Release binary installation does not require Rust.
+
+## Behavior
+
+`to-new-workspace` moves the current **whole tab** immediately after its source workspace;
+it does nothing when that tab is the workspace's only tab. Previous/next workspace tab actions
+append an independent tab at the destination, closing the source workspace if it becomes empty.
+
+Tabs are automatically balanced when a focus event observes a tab entry, changed panes, or
+changed area, and on certain move paths. Balancing can change split structure and proportions;
+a temporary tab may appear. See [movement and balancing](docs/behavior.md) for conditions and examples.
+
+## Checks
+
+With mise and the configured Rust and ShellCheck installed, run `mise run check` for the local
+quality gate. With Herdr 0.8.2 on PATH, `mise run live-herdr` runs six isolated session scenarios.
+See [how to test with Herdr 0.8.0](docs/testing.md#test-the-minimum-supported-herdr-version)
+and the [release procedure](docs/releasing.md).
 
 ## Configuration
 
@@ -101,7 +129,7 @@ description = "Move pane to new tab"
 key = "ctrl+alt+m"
 type = "plugin_action"
 command = "jeiea.grid-slide.to-new-workspace"
-description = "Move pane to new workspace"
+description = "Move tab to new workspace"
 
 [[keys.command]]
 key = "alt+shift+i"
