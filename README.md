@@ -32,8 +32,9 @@ a temporary tab may appear. See [movement and balancing](docs/behavior.md) for c
 ## Checks
 
 With mise and the configured Rust and ShellCheck installed, run `mise run check` for the local
-quality gate. With Herdr 0.8.2 on PATH, `mise run live-herdr` runs six isolated session scenarios.
-See [how to test with Herdr 0.8.0](docs/testing.md#test-the-minimum-supported-herdr-version)
+quality gate. On macOS arm64, `mise run test-herdr-0.8.0` downloads and tests the minimum version.
+With Herdr 0.8.2 on PATH, `mise run live-herdr` runs six isolated session scenarios.
+See [verification prerequisites](docs/testing.md#test-the-minimum-supported-herdr-version)
 and the [release procedure](docs/releasing.md).
 
 ## Configuration

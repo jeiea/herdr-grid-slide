@@ -9,7 +9,7 @@ the tag and GitHub release.
 
 1. Run `mise run bump -- <version>`, for example `mise run bump -- 0.1.1`.
 2. Run the [local quality gate](../README.md#checks).
-3. Manually run the [minimum-version live check](testing.md#test-the-minimum-supported-herdr-version)
+3. Run the [minimum-version live check](testing.md#test-the-minimum-supported-herdr-version)
    with Herdr 0.8.0 and the 0.8.2 regression check. Record the platform, versions, and results.
 4. Merge the change to the default branch.
 5. Run the **Release** workflow from the default branch.
