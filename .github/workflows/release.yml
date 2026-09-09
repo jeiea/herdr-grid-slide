@@ -166,8 +166,8 @@ jobs:
             "herdr-grid-slide-v${VERSION}-x86_64-apple-darwin" \
             "herdr-grid-slide-v${VERSION}-x86_64-unknown-linux-musl" \
             | sort > "$expected"
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$TAG" \
-            --jq '.assets[].name' | sort > "$actual"
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' | sort > "$actual"
           diff -u "$expected" "$actual"
           gh release edit "$TAG" --draft=false
       - name: Clean up an incomplete release
