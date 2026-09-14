@@ -34,6 +34,9 @@ Pane moves between tabs (`to-next-tab`, `to-previous-tab`, and horizontal direct
 that cross a tab boundary) directly request destination balancing. Whole-tab workspace moves
 with multiple panes also directly balance the destination. Vertical directional moves and
 `to-next-workspace` / `to-previous-workspace` rely on the resulting focus hook for automatic balancing.
+Across vertical workspace boundaries, the pane enters after the selected boundary pane in reading
+order. For example, the focus hook places a right pane returned by `move-up` then `move-down` after the
+original left pane; zoomed tabs skip that balancing and can retain Herdr's raw below-target placement.
 
 Automatic balancing skips tabs with one pane and zoomed tabs. Explicit `balance` also leaves
 a one-pane tab unchanged, but reports an error for a zoomed tab until it is unzoomed.

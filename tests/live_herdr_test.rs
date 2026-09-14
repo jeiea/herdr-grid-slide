@@ -88,53 +88,80 @@ fn move_right_crosses_into_the_next_tab_and_keeps_focus() {
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
-fn move_down_crosses_into_the_next_workspaces_active_tab_and_keeps_focus() {
+fn move_up_then_down_returns_the_right_pane_to_the_right_side_of_its_original_tab() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
-    let source = live
-        .create_workspace("workspace-boundary-source")
-        .expect("create source workspace");
+    let previous = live
+        .create_workspace("previous-workspace")
+        .expect("create previous workspace");
+    let active_previous = live
+        .create_tab(&previous.workspace_id, "active-previous-tab")
+        .expect("create active tab in previous workspace");
+    let original = live
+        .create_workspace("original-workspace")
+        .expect("create original workspace");
     let moving = live
-        .split_pane(&source.root_pane_id, "right", true)
-        .expect("create focused moving pane");
-    let destination = live
-        .create_workspace("workspace-boundary-destination")
-        .expect("create destination workspace");
-    let active_destination = live
-        .create_tab(&destination.workspace_id, "active-destination")
-        .expect("create active destination tab");
-    live.focus_workspace(&source.workspace_id)
-        .expect("focus source workspace");
+        .split_pane(&original.root_pane_id, "right", true)
+        .expect("create focused right pane");
     live.link_plugin().expect("link copied plugin");
 
     let before = live.snapshot().expect("capture pre-action snapshot");
-    let moving_terminal_id = pane(&before, &moving)["terminal_id"]
-        .as_str()
-        .expect("moving pane terminal ID")
-        .to_string();
-    let inactive_destination_panes = pane_ids_in_tab(&before, &destination.tab_id);
-    let active_destination_panes = pane_ids_in_tab(&before, &active_destination.tab_id);
+    let left_terminal_id = terminal_id(&before, &original.root_pane_id);
+    let moving_terminal_id = terminal_id(&before, &moving);
+    let inactive_previous_panes = pane_ids_in_tab(&before, &previous.tab_id);
+    let active_previous_panes = pane_ids_in_tab(&before, &active_previous.tab_id);
+    assert!(
+        workspace_number(&before, &previous.workspace_id)
+            < workspace_number(&before, &original.workspace_id)
+    );
     assert_eq!(focused_pane_id(&before), moving);
 
-    live.invoke_action("move-down")
-        .expect("invoke move-down and wait for its log");
+    live.invoke_action_and_wait_for_balance("move-up")
+        .expect("move up and wait for automatic balancing");
 
-    let after = live.snapshot().expect("capture post-action snapshot");
-    let moved = pane_by_terminal_id(&after, &moving_terminal_id);
-    assert_eq!(moved["workspace_id"], destination.workspace_id);
-    assert_eq!(moved["tab_id"], active_destination.tab_id);
-    assert_eq!(moved["focused"], true);
-    assert_eq!(focused_pane_id(&after), moved["pane_id"]);
+    let after_up = live.snapshot().expect("capture snapshot after moving up");
+    let moved_up = pane_by_terminal_id(&after_up, &moving_terminal_id);
+    assert_eq!(moved_up["workspace_id"], previous.workspace_id);
+    assert_eq!(moved_up["tab_id"], active_previous.tab_id);
+    assert_eq!(moved_up["focused"], true);
+    assert_eq!(focused_pane_id(&after_up), moved_up["pane_id"]);
     assert_eq!(
-        pane_ids_in_tab(&after, &source.tab_id),
-        BTreeSet::from([source.root_pane_id.clone()])
+        pane_ids_in_tab(&after_up, &original.tab_id),
+        BTreeSet::from([original.root_pane_id.clone()])
     );
     assert_eq!(
-        pane_ids_in_tab(&after, &destination.tab_id),
-        inactive_destination_panes
+        pane_ids_in_tab(&after_up, &previous.tab_id),
+        inactive_previous_panes
+    );
+    let mut remaining_previous_panes = pane_ids_in_tab(&after_up, &active_previous.tab_id);
+    assert!(
+        remaining_previous_panes.remove(moved_up["pane_id"].as_str().expect("moved-up pane ID"))
+    );
+    assert_eq!(remaining_previous_panes, active_previous_panes);
+
+    live.invoke_action_and_wait_for_balance("move-down")
+        .expect("move down and wait for automatic balancing");
+
+    let after_down = live.snapshot().expect("capture snapshot after moving down");
+    let left = pane_by_terminal_id(&after_down, &left_terminal_id);
+    let returned = pane_by_terminal_id(&after_down, &moving_terminal_id);
+    let left_pane_id = left["pane_id"].as_str().expect("left pane ID");
+    let returned_pane_id = returned["pane_id"].as_str().expect("returned pane ID");
+    for pane in [left, returned] {
+        assert_eq!(pane["workspace_id"], original.workspace_id);
+    }
+    assert_eq!(
+        panes_in_reading_order(&after_down, &original.tab_id),
+        [left_pane_id, returned_pane_id]
+    );
+    assert_eq!(returned["focused"], true);
+    assert_eq!(focused_pane_id(&after_down), returned_pane_id);
+    assert_eq!(
+        pane_ids_in_tab(&after_down, &previous.tab_id),
+        inactive_previous_panes
     );
     assert_eq!(
-        pane_ids_in_tab(&after, &active_destination.tab_id).len(),
-        active_destination_panes.len() + 1
+        pane_ids_in_tab(&after_down, &active_previous.tab_id),
+        active_previous_panes
     );
 }
 
@@ -659,12 +686,10 @@ impl LiveHerdr {
         let deadline = Instant::now() + ACTION_TIMEOUT;
 
         while Instant::now() < deadline {
-            let response = self.run_json([
-                "plugin", "log", "list", "--plugin", PLUGIN_ID, "--limit", "50",
-            ])?;
-            if let Some(log) = response["result"]["logs"]
-                .as_array()
-                .and_then(|logs| logs.iter().find(|log| log["log_id"] == log_id))
+            if let Some(log) = self
+                .plugin_logs()?
+                .iter()
+                .find(|log| log["log_id"] == log_id)
             {
                 match log["status"].as_str() {
                     Some("running") => {}
@@ -687,6 +712,66 @@ impl LiveHerdr {
         Err(format!(
             "plugin action {action_id} log {log_id} did not finish within {ACTION_TIMEOUT:?}"
         ))
+    }
+
+    fn invoke_action_and_wait_for_balance(&self, action_id: &str) -> Result<(), String> {
+        let existing_log_ids = self.plugin_log_ids()?;
+        self.invoke_action(action_id)?;
+        let deadline = Instant::now() + ACTION_TIMEOUT;
+        let mut last_hooks = Vec::new();
+        let mut unchanged_polls = 0;
+
+        while Instant::now() < deadline {
+            let hooks: Vec<_> = self
+                .plugin_logs()?
+                .into_iter()
+                .filter(|log| {
+                    log["event"] == "pane.focused"
+                        && log["log_id"]
+                            .as_str()
+                            .is_some_and(|id| !existing_log_ids.contains(id))
+                })
+                .collect();
+            if hooks.iter().any(|log| log["status"] == "failed") {
+                return Err(format!("automatic balance hook failed: {hooks:?}"));
+            }
+            let all_finished = !hooks.is_empty()
+                && hooks.iter().all(|log| {
+                    log["status"] == "succeeded"
+                        && log["finished_unix_ms"].as_u64().is_some()
+                        && log["exit_code"].as_i64() == Some(0)
+                });
+            if hooks == last_hooks {
+                unchanged_polls += 1;
+            } else {
+                last_hooks = hooks;
+                unchanged_polls = 0;
+            }
+            if all_finished && unchanged_polls >= 2 {
+                return Ok(());
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        Err(format!(
+            "automatic balance after {action_id} did not settle within {ACTION_TIMEOUT:?}; last hooks: {last_hooks:?}"
+        ))
+    }
+
+    fn plugin_log_ids(&self) -> Result<BTreeSet<String>, String> {
+        self.plugin_logs()?
+            .iter()
+            .map(|log| response_string(log, &["log_id"]))
+            .collect()
+    }
+
+    fn plugin_logs(&self) -> Result<Vec<Value>, String> {
+        let response = self.run_json([
+            "plugin", "log", "list", "--plugin", PLUGIN_ID, "--limit", "50",
+        ])?;
+        Ok(response["result"]["logs"]
+            .as_array()
+            .ok_or_else(|| format!("plugin log response omitted logs: {response}"))?
+            .to_owned())
     }
 
     fn snapshot(&mut self) -> Result<Value, String> {

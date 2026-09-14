@@ -1332,7 +1332,7 @@ fn focus_wraps_across_tabs_and_workspaces_in_visual_order() {
 }
 
 #[test]
-fn directional_moves_cross_container_boundaries_on_the_expected_side() {
+fn directional_moves_cross_container_boundaries_and_only_enter_before_the_target_on_the_right() {
     for (direction, workspace_id, tab_id, target_tab_id, target_pane_id, split, swap) in [
         (
             "left",
@@ -1368,7 +1368,7 @@ fn directional_moves_cross_container_boundaries_on_the_expected_side() {
             "tab-1-1",
             "pane-1-top-left",
             "down",
-            true,
+            false,
         ),
     ] {
         let mut layouts = standard_layouts();
@@ -1451,25 +1451,23 @@ fn directional_move_uses_the_live_context_and_new_pane_id_across_workspaces() {
         "tab-3-1",
         "pane-live",
     );
-    let herdr = FakeHerdr::new(before)
-        .with_replies(
-            "pane.move",
-            [successful_move_reply(
-                ("pane-live", "workspace-3", "tab-3-1"),
-                ("pane-new", "workspace-1", "tab-1-1"),
-                (
-                    None,
-                    layout(
-                        "tab-1-1",
-                        vec![
-                            pane("pane-new", 0, 0, 50, 80),
-                            pane("pane-1-top-left", 50, 0, 50, 80),
-                        ],
-                    ),
+    let herdr = FakeHerdr::new(before).with_replies(
+        "pane.move",
+        [successful_move_reply(
+            ("pane-live", "workspace-3", "tab-3-1"),
+            ("pane-new", "workspace-1", "tab-1-1"),
+            (
+                None,
+                layout(
+                    "tab-1-1",
+                    vec![
+                        pane("pane-1-top-left", 0, 0, 50, 80),
+                        pane("pane-new", 50, 0, 50, 80),
+                    ],
                 ),
-            )],
-        )
-        .with_replies("pane.swap", [swap_reply()]);
+            ),
+        )],
+    );
 
     let run = herdr.run(
         "workspace-stale",
@@ -1483,8 +1481,7 @@ fn directional_move_uses_the_live_context_and_new_pane_id_across_workspaces() {
         run.requests,
         [
             snapshot_call(),
-            directional_move_call("pane-live", "tab-1-1", "pane-1-top-left", "down", false,),
-            swap_call("pane-new", "pane-1-top-left"),
+            directional_move_call("pane-live", "tab-1-1", "pane-1-top-left", "down", true,),
         ]
     );
     let state = herdr.read_anchor_state();

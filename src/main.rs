@@ -238,7 +238,8 @@ impl PaneDirection {
     }
 
     fn requires_boundary_swap(self) -> bool {
-        matches!(self, PaneDirection::Right | PaneDirection::Down)
+        // Right enters before its left-edge target; other directions keep insertion order.
+        matches!(self, PaneDirection::Right)
     }
 
     fn is_horizontal(self) -> bool {
