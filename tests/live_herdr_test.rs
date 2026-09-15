@@ -3,7 +3,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -237,6 +237,98 @@ fn vertical_round_trips_keep_the_side_selected_by_the_user() {
     vertical(&mut live, stage, "move-down", to_previous, false);
     same_tab(&mut live, stage, "move-left", &active_previous, true);
     vertical(&mut live, stage, "move-up", to_original, true);
+}
+
+#[test]
+#[ignore = "requires Herdr and starts an isolated named session"]
+fn pane_termination_automatically_balances_the_surviving_tab() {
+    for (stage, focus_terminated_pane, exit_process) in [
+        ("focused API close", true, false),
+        ("non-focused API close", false, false),
+        ("focused process exit", true, true),
+    ] {
+        let mut live = LiveHerdr::start()
+            .unwrap_or_else(|error| panic!("{stage}: start isolated Herdr session: {error}"));
+        let fixture = live
+            .create_workspace(stage)
+            .unwrap_or_else(|error| panic!("{stage}: create workspace: {error}"));
+        let terminated = live
+            .split_pane(&fixture.root_pane_id, "right", focus_terminated_pane)
+            .unwrap_or_else(|error| panic!("{stage}: create terminating pane: {error}"));
+        let survivor = live
+            .split_pane(&fixture.root_pane_id, "down", false)
+            .unwrap_or_else(|error| panic!("{stage}: create lower surviving pane: {error}"));
+
+        let before = live
+            .snapshot()
+            .unwrap_or_else(|error| panic!("{stage}: capture T-layout snapshot: {error}"));
+        let surviving_terminals = [
+            terminal_id(&before, &fixture.root_pane_id),
+            terminal_id(&before, &survivor),
+        ];
+        assert_t_layout(
+            &before,
+            stage,
+            &fixture.tab_id,
+            &fixture.root_pane_id,
+            &survivor,
+            &terminated,
+        );
+        assert_eq!(
+            focused_pane_id(&before),
+            if focus_terminated_pane {
+                terminated.as_str()
+            } else {
+                fixture.root_pane_id.as_str()
+            },
+            "{stage}: fixture should focus the intended pane"
+        );
+        live.link_plugin()
+            .unwrap_or_else(|error| panic!("{stage}: link copied plugin: {error}"));
+        let existing_log_ids = live
+            .plugin_log_ids()
+            .unwrap_or_else(|error| panic!("{stage}: list logs before termination: {error}"));
+        let expected_event = if exit_process {
+            "pane.exited"
+        } else {
+            "pane.closed"
+        };
+
+        if exit_process {
+            live.exit_pane(&terminated)
+                .unwrap_or_else(|error| panic!("{stage}: exit pane process: {error}"));
+        } else {
+            live.close_pane(&terminated)
+                .unwrap_or_else(|error| panic!("{stage}: close pane through API: {error}"));
+        }
+        live.wait_for_pane_to_disappear(&terminated)
+            .unwrap_or_else(|error| panic!("{stage}: wait for terminated pane: {error}"));
+        live.wait_for_termination_hooks(&existing_log_ids, expected_event)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "{stage}: missing or failed {expected_event} termination balance hook: {error}"
+                )
+            });
+        let after = live
+            .snapshot()
+            .unwrap_or_else(|error| panic!("{stage}: capture balanced snapshot: {error}"));
+
+        let survivor_ids = [fixture.root_pane_id.as_str(), survivor.as_str()];
+        assert_balanced_survivors(
+            &after,
+            stage,
+            &fixture.tab_id,
+            survivor_ids,
+            &surviving_terminals,
+        );
+        let focused_survivor = focused_pane_id(&after);
+        assert!(
+            survivor_ids.contains(&focused_survivor.as_str()),
+            "{stage}: termination should leave focus on a surviving pane, found {focused_survivor}"
+        );
+        live.run_and_wait_for_text(&focused_survivor, stage)
+            .unwrap_or_else(|error| panic!("{stage}: next input failed: {error}"));
+    }
 }
 
 #[test]
@@ -743,6 +835,48 @@ impl LiveHerdr {
         response_string(&response, &["result", "pane", "pane_id"])
     }
 
+    fn close_pane(&self, pane_id: &str) -> Result<(), String> {
+        self.run_json(["pane", "close", pane_id]).map(|_| ())
+    }
+
+    fn exit_pane(&self, pane_id: &str) -> Result<(), String> {
+        self.run_raw(["pane", "run", pane_id, "exit"]).map(|_| ())
+    }
+
+    fn wait_for_pane_to_disappear(&mut self, pane_id: &str) -> Result<Value, String> {
+        let deadline = Instant::now() + ACTION_TIMEOUT;
+        while Instant::now() < deadline {
+            let snapshot = self.snapshot()?;
+            if !snapshot["panes"]
+                .as_array()
+                .ok_or_else(|| format!("snapshot omitted panes: {snapshot}"))?
+                .iter()
+                .any(|pane| pane["pane_id"] == pane_id)
+            {
+                return Ok(snapshot);
+            }
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        Err(format!(
+            "pane {pane_id} did not disappear within {ACTION_TIMEOUT:?}"
+        ))
+    }
+
+    fn run_and_wait_for_text(&self, pane_id: &str, stage: &str) -> Result<(), String> {
+        let marker = format!("termination-next-input-{}", stage.replace(' ', "-"));
+        self.run_raw(["pane", "run", pane_id, "printf", marker.as_str()])?;
+        self.run_raw([
+            "pane",
+            "wait-output",
+            pane_id,
+            "--match",
+            marker.as_str(),
+            "--timeout",
+            "5000",
+        ])?;
+        Ok(())
+    }
+
     fn focus_tab(&self, tab_id: &str) -> Result<(), String> {
         self.run_json(["tab", "focus", tab_id]).map(|_| ())
     }
@@ -831,6 +965,52 @@ impl LiveHerdr {
         ))
     }
 
+    fn wait_for_termination_hooks(
+        &self,
+        existing_log_ids: &BTreeSet<String>,
+        expected_event: &str,
+    ) -> Result<(), String> {
+        let deadline = Instant::now() + ACTION_TIMEOUT;
+        let mut last_hooks = Vec::new();
+
+        while Instant::now() < deadline {
+            let hooks: Vec<_> = self
+                .plugin_logs()?
+                .into_iter()
+                .filter(|log| {
+                    matches!(
+                        log["event"].as_str(),
+                        Some("pane.focused" | "pane.closed" | "pane.exited")
+                    ) && log["log_id"]
+                        .as_str()
+                        .is_some_and(|id| !existing_log_ids.contains(id))
+                })
+                .collect();
+            if hooks.iter().any(|log| log["status"] == "failed") {
+                return Err(format!("automatic balance hook failed: {hooks:?}"));
+            }
+            let expected_finished = hooks.iter().any(|log| {
+                log["event"] == expected_event
+                    && log["status"] == "succeeded"
+                    && log["finished_unix_ms"].as_u64().is_some()
+                    && log["exit_code"].as_i64() == Some(0)
+            });
+            let all_observed_finished = hooks.iter().all(|log| {
+                log["status"] == "succeeded"
+                    && log["finished_unix_ms"].as_u64().is_some()
+                    && log["exit_code"].as_i64() == Some(0)
+            });
+            if expected_finished && all_observed_finished {
+                return Ok(());
+            }
+            last_hooks = hooks;
+            std::thread::sleep(POLL_INTERVAL);
+        }
+        Err(format!(
+            "{expected_event} hook did not finish within {ACTION_TIMEOUT:?}; last related hooks: {last_hooks:?}"
+        ))
+    }
+
     fn plugin_log_ids(&self) -> Result<BTreeSet<String>, String> {
         self.plugin_logs()?
             .iter()
@@ -896,6 +1076,11 @@ impl LiveHerdr {
     }
 
     fn apply_environment(&self, command: &mut Command) {
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().starts_with("HERDR_") {
+                command.env_remove(key);
+            }
+        }
         command
             .env("XDG_CONFIG_HOME", &self.config_home)
             .env("XDG_STATE_HOME", &self.state_home)
@@ -1046,13 +1231,84 @@ fn assert_two_pane_position(
     );
 }
 
+fn assert_t_layout(
+    snapshot: &Value,
+    stage: &str,
+    tab_id: &str,
+    upper: &str,
+    lower: &str,
+    right: &str,
+) {
+    let upper = pane_rect(snapshot, tab_id, upper);
+    let lower = pane_rect(snapshot, tab_id, lower);
+    let right = pane_rect(snapshot, tab_id, right);
+    assert_eq!(
+        upper["x"], lower["x"],
+        "{stage}: survivors should start stacked"
+    );
+    assert!(
+        upper["y"].as_u64().unwrap() < lower["y"].as_u64().unwrap(),
+        "{stage}: survivor fixture should be vertical"
+    );
+    assert!(
+        upper["x"].as_u64().unwrap() < right["x"].as_u64().unwrap(),
+        "{stage}: terminating pane should occupy the right half"
+    );
+}
+
+fn assert_balanced_survivors(
+    snapshot: &Value,
+    stage: &str,
+    tab_id: &str,
+    survivor_ids: [&str; 2],
+    terminal_ids: &[String; 2],
+) {
+    assert_eq!(
+        pane_ids_in_tab(snapshot, tab_id),
+        survivor_ids.iter().map(|id| (*id).to_owned()).collect(),
+        "{stage}: termination should preserve the surviving pane IDs"
+    );
+    assert_eq!(
+        terminal_ids
+            .iter()
+            .map(|id| {
+                pane_by_terminal_id(snapshot, id)["pane_id"]
+                    .as_str()
+                    .expect("surviving pane ID")
+            })
+            .collect::<BTreeSet<_>>(),
+        survivor_ids.into_iter().collect(),
+        "{stage}: termination should preserve the surviving terminals"
+    );
+    let layout = tab_layout(snapshot, tab_id);
+    assert_eq!(
+        layout["splits"].as_array().map(Vec::len),
+        Some(1),
+        "{stage}: termination should leave one split for two survivors"
+    );
+    assert_eq!(
+        layout["splits"][0]["direction"], "right",
+        "{stage}: survivors remained vertical instead of a horizontal grid"
+    );
+    assert_eq!(
+        layout["splits"][0]["ratio"], 0.5,
+        "{stage}: horizontal grid should be 50:50"
+    );
+    let first = pane_rect(snapshot, tab_id, survivor_ids[0]);
+    let second = pane_rect(snapshot, tab_id, survivor_ids[1]);
+    assert_eq!(
+        first["y"], second["y"],
+        "{stage}: survivors should share a row"
+    );
+    assert_eq!(
+        first["width"], second["width"],
+        "{stage}: survivors should occupy equal columns"
+    );
+}
+
 fn unique_suffix() -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock after Unix epoch")
-        .as_nanos();
     let sequence = SESSION_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    format!("{}-{nanos}-{sequence}", std::process::id())
+    format!("{:x}-{sequence:x}", std::process::id())
 }
 
 fn fixture_from_create_response(response: &Value) -> Result<Fixture, String> {
@@ -1107,6 +1363,25 @@ fn pane<'a>(snapshot: &'a Value, pane_id: &str) -> &'a Value {
         .iter()
         .find(|pane| pane["pane_id"] == pane_id)
         .unwrap_or_else(|| panic!("pane {pane_id} missing from snapshot: {snapshot}"))
+}
+
+fn tab_layout<'a>(snapshot: &'a Value, tab_id: &str) -> &'a Value {
+    snapshot["layouts"]
+        .as_array()
+        .expect("snapshot layout list")
+        .iter()
+        .find(|layout| layout["tab_id"] == tab_id)
+        .unwrap_or_else(|| panic!("tab {tab_id} layout missing from snapshot: {snapshot}"))
+}
+
+fn pane_rect<'a>(snapshot: &'a Value, tab_id: &str, pane_id: &str) -> &'a Value {
+    tab_layout(snapshot, tab_id)["panes"]
+        .as_array()
+        .expect("layout pane list")
+        .iter()
+        .find(|pane| pane["pane_id"] == pane_id)
+        .map(|pane| &pane["rect"])
+        .unwrap_or_else(|| panic!("pane {pane_id} layout missing from snapshot: {snapshot}"))
 }
 
 fn pane_by_terminal_id<'a>(snapshot: &'a Value, terminal_id: &str) -> &'a Value {

@@ -149,3 +149,11 @@ command = ["./bin/herdr-grid-slide", "balance"]
 [[events]]
 on = "pane.focused"
 command = ["./bin/herdr-grid-slide", "on-pane-focused"]
+
+[[events]]
+on = "pane.closed"
+command = ["./bin/herdr-grid-slide", "on-pane-focused"]
+
+[[events]]
+on = "pane.exited"
+command = ["./bin/herdr-grid-slide", "on-pane-focused"]

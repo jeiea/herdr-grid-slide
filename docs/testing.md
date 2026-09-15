@@ -21,7 +21,7 @@ mise run live-herdr
 ```
 
 The harness defaults to the exact output `herdr 0.8.2`; `HERDR_TEST_VERSION` can override the
-expected output. It runs seven scenarios in isolated named sessions and cleans up its servers
+expected output. It runs eight scenarios in isolated named sessions and cleans up its servers
 and session data. The environment must permit local Herdr servers, Unix sockets, and terminal processes.
 
 To exercise an installed Herdr 0.9.0:
@@ -32,10 +32,11 @@ HERDR_TEST_VERSION='herdr 0.9.0' mise run live-herdr
 
 The scenarios invoke `move-left`, `move-right`, `move-up`, `move-down`, `to-new-tab`,
 `to-new-workspace`, `tab-to-next-workspace`, and `tab-to-previous-workspace`. They cover a
-horizontal tab-boundary round trip, vertical workspace moves, and whole-tab moves. The non-leading
-`to-new-workspace` case also guards the old pane-ID alias used to refocus a follower after its tab
-moves. This is a headless server smoke test: it verifies that Herdr accepts the requests and
-preserves final server state, but it cannot observe which tab each connected shell client displays.
+horizontal tab-boundary round trip, vertical workspace moves, whole-tab moves, and focused or
+non-focused pane termination through the API or process exit. The non-leading `to-new-workspace`
+case also guards the old pane-ID alias used to refocus a follower after its tab moves. This is a
+headless server smoke test: it verifies that Herdr accepts the requests and preserves final server
+state, but it cannot observe which tab each connected shell client displays.
 
 ## Test the minimum supported Herdr version
 
@@ -47,7 +48,7 @@ mise run test-herdr-0.8.0
 ```
 
 The [task](../.mise/tasks/test-herdr-0.8.0.sh) downloads the official 0.8.0 binary, verifies its
-fixed SHA256, runs the seven isolated scenarios, and removes the temporary download. Other
+fixed SHA256, runs the eight isolated scenarios, and removes the temporary download. Other
 platforms and checksum mismatches are rejected before execution. No global installation is changed.
 
 ## Verify Herdr 0.9.0 connected-client views
@@ -138,3 +139,19 @@ left pane on the left through a pure round trip, and preserves a user-selected l
 both `Down` and the symmetric `Up`. Every vertical segment verifies the destination workspace and
 tab, moving terminal, server focus, reading order, unaffected panes, and finite successful
 `pane.focused` hooks. Each live run used isolated session resources that were removed afterward.
+
+In the pane-termination verification on 2026-09-15, macOS 26.6.2 arm64:
+
+| Check | Result |
+| --- | --- |
+| Targeted termination socket integration tests | A `pane.closed` hook without `HERDR_TAB_ID` balanced the focused tab and updated its state; explicit `balance` without that variable still failed before making a request; all three manifest events used an accepted entrypoint |
+| `mise run check` | 4 shell test scripts, 3 Rust unit tests, and 104 integration tests passed; release build succeeded |
+| `mise run test-herdr-0.8.0` | Official download and fixed SHA256 check passed; `herdr 0.8.0`; all 8 isolated live scenarios passed |
+| `mise run live-herdr` with Herdr 0.8.2 on PATH | `herdr 0.8.2`; all 8 isolated live scenarios passed |
+| `HERDR_TEST_VERSION='herdr 0.9.0' mise run live-herdr` | `herdr 0.9.0`; all 8 isolated live scenarios passed |
+
+The termination scenario covers focused and non-focused API closure plus focused process exit. Each
+segment verifies a finite successful termination hook, the surviving pane and terminal set, a
+horizontal 50:50 grid, focus on a survivor, and successful input to that focused pane. The harness
+removes inherited `HERDR_*` values and uses short isolated session names; all temporary session and
+download resources were removed afterward.

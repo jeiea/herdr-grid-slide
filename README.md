@@ -5,7 +5,7 @@ A plugin born from the idea of focusing and moving panes with hjkl.
 ## Support
 
 Minimum Herdr version: **0.8.0**. Release targets: macOS and Linux, each on arm64 and x86_64.
-The seven live scenarios passed on macOS arm64 with Herdr 0.8.0, 0.8.2, and 0.9.0; other
+The eight live scenarios passed on macOS arm64 with Herdr 0.8.0, 0.8.2, and 0.9.0; other
 platforms and versions have not been exercised in that run. See
 [verification details](docs/testing.md#recorded-results).
 
@@ -30,15 +30,15 @@ Successful pane moves across tab or workspace boundaries keep the server focus a
 shell view on the moved pane. See [movement and balancing](docs/behavior.md) for compensation
 timing, partial-success behavior, and the current multi-client limitation.
 
-Tabs are automatically balanced when a focus event observes a tab entry, changed panes, or
-changed area, and on certain move paths. Balancing can change split structure and proportions;
-a temporary tab may appear.
+Tabs are automatically balanced when a focus or pane termination event observes a tab entry,
+changed panes, or changed area, and on certain move paths. Balancing can change split structure
+and proportions; a temporary tab may appear.
 
 ## Checks
 
 With mise and the configured Rust and ShellCheck installed, run `mise run check` for the local
 quality gate. On macOS arm64, `mise run test-herdr-0.8.0` downloads and tests the minimum version.
-With Herdr 0.8.2 on PATH, `mise run live-herdr` runs seven isolated session scenarios. Set
+With Herdr 0.8.2 on PATH, `mise run live-herdr` runs eight isolated session scenarios. Set
 `HERDR_TEST_VERSION='herdr 0.9.0'` to check an installed Herdr 0.9.0 instead.
 See [verification prerequisites](docs/testing.md#test-the-minimum-supported-herdr-version)
 and the [release procedure](docs/releasing.md).

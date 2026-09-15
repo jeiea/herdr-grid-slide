@@ -371,6 +371,10 @@ fn main() {
 
 fn run() -> Result<()> {
     let command = parse_arguments(env::args().skip(1))?;
+    if matches!(command, Command::OnPaneFocused) {
+        return run_pane_focus_hook();
+    }
+
     let context = read_context(matches!(
         command,
         Command::Focus(_)
@@ -380,7 +384,6 @@ fn run() -> Result<()> {
                 scope: Scope::Tab,
                 ..
             }
-            | Command::OnPaneFocused
     ))?;
     let mut client = SocketClient::new(&context.socket_path);
     match command {
@@ -397,7 +400,7 @@ fn run() -> Result<()> {
         }
         Command::MoveWorkspace(direction) => move_workspace(&context, direction, &mut client),
         Command::CreatePane => create_pane(&context, &mut client),
-        Command::OnPaneFocused => balance_focused_pane(&context, &mut client, None),
+        Command::OnPaneFocused => unreachable!("pane focus hook is handled before context"),
         Command::Balance => balance(&context, &mut client),
     }
 }
@@ -474,6 +477,14 @@ fn read_context(needs_state_dir: bool) -> Result<Context> {
         tab_id: required_env("HERDR_TAB_ID")?,
         workspace_id: required_env("HERDR_WORKSPACE_ID")?,
     })
+}
+
+fn run_pane_focus_hook() -> Result<()> {
+    let socket_path = required_env("HERDR_SOCKET_PATH")?;
+    let state_dir = PathBuf::from(required_env("HERDR_PLUGIN_STATE_DIR")?);
+    let mut client = SocketClient::new(&socket_path);
+    let lock = lock_balance_state_dir(&state_dir)?;
+    balance_focused_pane_locked(&lock, &mut client, None)
 }
 
 fn move_pane(
@@ -963,6 +974,10 @@ fn lock_balance(context: &Context) -> Result<BalanceLock<'_>> {
         .state_dir
         .as_deref()
         .ok_or("missing HERDR_PLUGIN_STATE_DIR")?;
+    lock_balance_state_dir(state_dir)
+}
+
+fn lock_balance_state_dir(state_dir: &Path) -> Result<BalanceLock<'_>> {
     fs::create_dir_all(state_dir).map_err(|error| error.to_string())?;
     let file = OpenOptions::new()
         .create(true)

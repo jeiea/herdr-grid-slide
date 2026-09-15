@@ -60,10 +60,12 @@ client view by itself.
 
 ## Automatic balancing
 
-The `pane.focused` hook observes the focused tab, its pane set, and its occupied area. A tab entry
-or a change to the panes or area triggers balancing. Repeated focus within the same observed
-state skips duplicate work. A resize or client attach alone does not run a separate resize hook;
-a subsequent pane focus lets the plugin observe the new area.
+The `pane.focused`, `pane.closed`, and `pane.exited` hooks observe the focused tab, its pane set,
+and its occupied area. A tab entry or a change to the panes or area triggers balancing. Repeated
+observations of the same state skip duplicate work. A resize or client attach alone does not run
+a separate resize hook; a subsequent pane focus lets the plugin observe the new area. Termination
+hooks do not balance a tab that has already disappeared, and changes in a background tab are
+deferred until that tab is next focused.
 
 Pane moves between tabs (`to-next-tab`, `to-previous-tab`, and horizontal directional moves
 that cross a tab boundary) directly request destination balancing. Whole-tab workspace moves

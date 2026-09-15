@@ -2657,6 +2657,58 @@ fn pane_focused_balances_the_same_tab_when_its_panes_changed() {
 }
 
 #[test]
+fn pane_closed_balances_the_focused_tab_without_a_tab_environment_variable() {
+    let herdr = FakeHerdr::new(focused(
+        tab_snapshot(vec![
+            pane("pane-a", 0, 0, 50, 40),
+            pane("pane-b", 50, 0, 50, 40),
+        ]),
+        "workspace-1",
+        "tab-main",
+        "pane-a",
+    ))
+    .with_replies(
+        "layout.export",
+        [export_reply(split("right", leaf("pane-a"), leaf("pane-b")))],
+    );
+    herdr.write_balance_state("tab-main", &["pane-a", "pane-b", "pane-closed"]);
+
+    let run = herdr.run_without_tab("workspace-1", "pane-closed", &["on-pane-focused"]);
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            ratio_call(&[], 0.5),
+            snapshot_call(),
+        ]
+    );
+    assert_eq!(
+        herdr.read_balance_state(),
+        json!({
+            "bounds": bounds(0.0, 0.0, 100.0, 40.0),
+            "paneIds": ["pane-a", "pane-b"],
+            "tabId": "tab-main",
+        }),
+    );
+}
+
+#[test]
+fn balance_still_requires_a_tab_environment_variable() {
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 50, 40),
+        pane("pane-b", 50, 0, 50, 40),
+    ]));
+
+    let run = herdr.run_without_tab("workspace-1", "pane-a", &["balance"]);
+
+    assert_eq!(run.assert_failure(), "missing HERDR_TAB_ID\n");
+    assert!(run.requests.is_empty());
+}
+
+#[test]
 fn pane_focused_balances_the_same_tab_when_its_area_changed() {
     // Herdr sends no event when a client of another size attaches or the window
     // is resized, so the first focus afterwards has to notice that the grid was
@@ -3832,7 +3884,10 @@ fn every_manifest_entrypoint_is_a_command_the_plugin_accepts() {
         .filter_map(|line| line.strip_prefix("on = "))
         .collect();
 
-    assert_eq!(events, ["\"pane.focused\""]);
+    assert_eq!(
+        events,
+        ["\"pane.focused\"", "\"pane.closed\"", "\"pane.exited\""]
+    );
 
     assert!(
         !commands.is_empty(),
@@ -3928,18 +3983,36 @@ impl FakeHerdr {
     }
 
     fn run(&self, workspace_id: &str, tab_id: &str, pane_id: &str, args: &[&str]) -> Run {
+        self.run_with_tab(workspace_id, Some(tab_id), pane_id, args)
+    }
+
+    fn run_without_tab(&self, workspace_id: &str, pane_id: &str, args: &[&str]) -> Run {
+        self.run_with_tab(workspace_id, None, pane_id, args)
+    }
+
+    fn run_with_tab(
+        &self,
+        workspace_id: &str,
+        tab_id: Option<&str>,
+        pane_id: &str,
+        args: &[&str],
+    ) -> Run {
         let socket_path = self.directory.join("herdr.sock");
         let stop = Arc::new(AtomicBool::new(false));
         let server = self.serve(&socket_path, Arc::clone(&stop));
-        let output = ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-grid-slide"))
+        let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-grid-slide"));
+        command
             .args(args)
             .env("HERDR_PANE_ID", pane_id)
             .env("HERDR_PLUGIN_STATE_DIR", &self.state_path)
             .env("HERDR_SOCKET_PATH", &socket_path)
-            .env("HERDR_TAB_ID", tab_id)
-            .env("HERDR_WORKSPACE_ID", workspace_id)
-            .output()
-            .unwrap();
+            .env("HERDR_WORKSPACE_ID", workspace_id);
+        if let Some(tab_id) = tab_id {
+            command.env("HERDR_TAB_ID", tab_id);
+        } else {
+            command.env_remove("HERDR_TAB_ID");
+        }
+        let output = command.output().unwrap();
         stop.store(true, Ordering::Relaxed);
         let requests = server.join().unwrap();
         Run { output, requests }
