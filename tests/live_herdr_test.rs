@@ -164,7 +164,7 @@ fn to_new_tab_places_the_detached_pane_in_the_next_tab_and_sets_server_focus_to_
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
-fn move_up_then_down_returns_the_right_pane_to_the_right_side_of_its_original_tab() {
+fn vertical_round_trips_keep_the_side_selected_by_the_user() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let previous = live
         .create_workspace("previous-workspace")
@@ -181,64 +181,62 @@ fn move_up_then_down_returns_the_right_pane_to_the_right_side_of_its_original_ta
     live.link_plugin().expect("link copied plugin");
 
     let before = live.snapshot().expect("capture pre-action snapshot");
-    let left_terminal_id = terminal_id(&before, &original.root_pane_id);
     let moving_terminal_id = terminal_id(&before, &moving);
     let inactive_previous_panes = pane_ids_in_tab(&before, &previous.tab_id);
-    let active_previous_panes = pane_ids_in_tab(&before, &active_previous.tab_id);
     assert!(
         workspace_number(&before, &previous.workspace_id)
             < workspace_number(&before, &original.workspace_id)
     );
     assert_eq!(focused_pane_id(&before), moving);
 
-    live.invoke_action_and_wait_for_balance("move-up")
-        .expect("move up and wait for automatic balancing");
+    let to_previous = (&original, &active_previous);
+    let to_original = (&active_previous, &original);
+    let unchanged = (previous.tab_id.as_str(), &inactive_previous_panes);
+    let vertical = |live: &mut LiveHerdr, stage, action_id, route, moving_first| {
+        assert_vertical_move(
+            live,
+            stage,
+            action_id,
+            &moving_terminal_id,
+            route,
+            moving_first,
+            unchanged,
+        );
+    };
+    let same_tab = |live: &mut LiveHerdr, stage, action_id, destination, moving_first| {
+        live.invoke_action(action_id)
+            .unwrap_or_else(|error| panic!("{stage}: {action_id} failed: {error}"));
+        let snapshot = live
+            .snapshot()
+            .unwrap_or_else(|error| panic!("{stage}: capture snapshot after {action_id}: {error}"));
+        assert_two_pane_position(
+            &snapshot,
+            stage,
+            action_id,
+            &moving_terminal_id,
+            destination,
+            moving_first,
+        );
+    };
 
-    let after_up = live.snapshot().expect("capture snapshot after moving up");
-    let moved_up = pane_by_terminal_id(&after_up, &moving_terminal_id);
-    assert_eq!(moved_up["workspace_id"], previous.workspace_id);
-    assert_eq!(moved_up["tab_id"], active_previous.tab_id);
-    assert_eq!(moved_up["focused"], true);
-    assert_eq!(focused_pane_id(&after_up), moved_up["pane_id"]);
-    assert_eq!(
-        pane_ids_in_tab(&after_up, &original.tab_id),
-        BTreeSet::from([original.root_pane_id.clone()])
-    );
-    assert_eq!(
-        pane_ids_in_tab(&after_up, &previous.tab_id),
-        inactive_previous_panes
-    );
-    let mut remaining_previous_panes = pane_ids_in_tab(&after_up, &active_previous.tab_id);
-    assert!(
-        remaining_previous_panes.remove(moved_up["pane_id"].as_str().expect("moved-up pane ID"))
-    );
-    assert_eq!(remaining_previous_panes, active_previous_panes);
+    let stage = "right pure round trip";
+    vertical(&mut live, stage, "move-up", to_previous, false);
+    vertical(&mut live, stage, "move-down", to_original, false);
 
-    live.invoke_action_and_wait_for_balance("move-down")
-        .expect("move down and wait for automatic balancing");
+    let stage = "left selected before down";
+    vertical(&mut live, stage, "move-up", to_previous, false);
+    same_tab(&mut live, stage, "move-left", &active_previous, true);
+    vertical(&mut live, stage, "move-down", to_original, true);
 
-    let after_down = live.snapshot().expect("capture snapshot after moving down");
-    let left = pane_by_terminal_id(&after_down, &left_terminal_id);
-    let returned = pane_by_terminal_id(&after_down, &moving_terminal_id);
-    let left_pane_id = left["pane_id"].as_str().expect("left pane ID");
-    let returned_pane_id = returned["pane_id"].as_str().expect("returned pane ID");
-    for pane in [left, returned] {
-        assert_eq!(pane["workspace_id"], original.workspace_id);
-    }
-    assert_eq!(
-        panes_in_reading_order(&after_down, &original.tab_id),
-        [left_pane_id, returned_pane_id]
-    );
-    assert_eq!(returned["focused"], true);
-    assert_eq!(focused_pane_id(&after_down), returned_pane_id);
-    assert_eq!(
-        pane_ids_in_tab(&after_down, &previous.tab_id),
-        inactive_previous_panes
-    );
-    assert_eq!(
-        pane_ids_in_tab(&after_down, &active_previous.tab_id),
-        active_previous_panes
-    );
+    let stage = "left pure round trip";
+    vertical(&mut live, stage, "move-up", to_previous, true);
+    vertical(&mut live, stage, "move-down", to_original, true);
+
+    let stage = "left selected before up";
+    same_tab(&mut live, stage, "move-right", &original, false);
+    vertical(&mut live, stage, "move-down", to_previous, false);
+    same_tab(&mut live, stage, "move-left", &active_previous, true);
+    vertical(&mut live, stage, "move-up", to_original, true);
 }
 
 #[test]
@@ -961,6 +959,91 @@ impl Drop for LiveHerdr {
     fn drop(&mut self) {
         self.cleanup();
     }
+}
+
+fn assert_vertical_move(
+    live: &mut LiveHerdr,
+    stage: &str,
+    action_id: &str,
+    moving_terminal_id: &str,
+    route: (&Fixture, &Fixture),
+    moving_first: bool,
+    unchanged_tab: (&str, &BTreeSet<String>),
+) {
+    let (source, destination) = route;
+    live.invoke_action_and_wait_for_balance(action_id)
+        .unwrap_or_else(|error| {
+            panic!("{stage}: {action_id} and automatic balancing failed: {error}")
+        });
+    let snapshot = live
+        .snapshot()
+        .unwrap_or_else(|error| panic!("{stage}: capture snapshot after {action_id}: {error}"));
+
+    assert_two_pane_position(
+        &snapshot,
+        stage,
+        action_id,
+        moving_terminal_id,
+        destination,
+        moving_first,
+    );
+    assert_eq!(
+        pane_ids_in_tab(&snapshot, &source.tab_id),
+        BTreeSet::from([source.root_pane_id.clone()]),
+        "{stage}: {action_id} should leave only the stationary pane in the source tab"
+    );
+    assert_eq!(
+        pane_ids_in_tab(&snapshot, unchanged_tab.0),
+        *unchanged_tab.1,
+        "{stage}: {action_id} should preserve panes in the unaffected tab"
+    );
+}
+
+fn assert_two_pane_position(
+    snapshot: &Value,
+    stage: &str,
+    action_id: &str,
+    moving_terminal_id: &str,
+    destination: &Fixture,
+    moving_first: bool,
+) {
+    let moved = pane_by_terminal_id(snapshot, moving_terminal_id);
+    let moved_pane_id = moved["pane_id"].as_str().expect("moved pane ID");
+    let stationary_pane_id = destination.root_pane_id.as_str();
+    let expected_order = if moving_first {
+        [moved_pane_id, stationary_pane_id]
+    } else {
+        [stationary_pane_id, moved_pane_id]
+    };
+    let expected_side = if moving_first { "left" } else { "right" };
+
+    assert_eq!(
+        moved["workspace_id"], destination.workspace_id,
+        "{stage}: {action_id} should reach the destination workspace"
+    );
+    assert_eq!(
+        moved["tab_id"], destination.tab_id,
+        "{stage}: {action_id} should reach the destination tab"
+    );
+    assert_eq!(
+        panes_in_reading_order(snapshot, &destination.tab_id),
+        expected_order,
+        "{stage}: {action_id} should place the moving pane on the {expected_side}"
+    );
+    assert_eq!(
+        pane_ids_in_tab(snapshot, &destination.tab_id),
+        BTreeSet::from([destination.root_pane_id.clone(), moved_pane_id.to_owned()]),
+        "{stage}: {action_id} should preserve the destination pane set"
+    );
+    assert_eq!(
+        moved["focused"], true,
+        "{stage}: {action_id} should focus the moving pane"
+    );
+    assert_eq!(
+        focused_pane_id(snapshot),
+        moved_pane_id,
+        "{stage}: {action_id} should keep server focus on the moving pane"
+    );
 }
 
 fn unique_suffix() -> String {

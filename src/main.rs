@@ -237,9 +237,14 @@ impl PaneDirection {
         }
     }
 
-    fn requires_boundary_swap(self) -> bool {
-        // Right enters before its left-edge target; other directions keep insertion order.
-        matches!(self, PaneDirection::Right)
+    fn requires_boundary_swap(self, anchor_x: f64, target_center_x: f64) -> bool {
+        // Right always enters before its left-edge target. Vertical moves do so only
+        // for a left anchor; equality stays after the target without an extra swap.
+        match self {
+            PaneDirection::Right => true,
+            PaneDirection::Up | PaneDirection::Down => anchor_x < target_center_x,
+            PaneDirection::Left => false,
+        }
     }
 
     fn is_horizontal(self) -> bool {
@@ -850,7 +855,10 @@ fn move_directionally(
     }
 
     let split_direction = direction.boundary_split();
-    let needs_swap = direction.requires_boundary_swap();
+    let target_layout = find_layout(&snapshot, &next_state.tab_id)?;
+    let target_bounds = layout_bounds(target_layout)?;
+    let target_center_x = normalize_point(target_bounds, pane_center(target)).x;
+    let needs_swap = direction.requires_boundary_swap(next_state.x, target_center_x);
     let target_tab_id = next_state.tab_id.clone();
     let moved = request_pane_move(
         client,
@@ -1329,9 +1337,10 @@ fn request_pane_move(
 }
 
 /// Herdr 0.9.0 does not project `pane.move --focus` to connected shell client
-/// views (herdrdev/herdr#4153), and a rightward `focus: false` move followed by
-/// `pane.swap` has the same gap. Remove this compensation only after every
-/// supported Herdr projects both forms to the destination tab.
+/// views (herdrdev/herdr#4153), and a boundary move that uses `focus: false`
+/// followed by `pane.swap` to enter before its target has the same gap. Remove
+/// this compensation only after every supported Herdr projects both forms to
+/// the destination tab.
 fn focus_moved_pane(client: &mut SocketClient, pane_id: &str) -> Result<()> {
     client
         .request("pane.focus", json!({"pane_id": pane_id}))

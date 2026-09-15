@@ -1444,7 +1444,7 @@ fn focus_wraps_across_tabs_and_workspaces_in_visual_order() {
 }
 
 #[test]
-fn moving_directionally_across_containers_focuses_the_moved_pane_after_right_side_placement() {
+fn moving_across_containers_places_and_focuses_the_pane_at_its_directional_boundary() {
     for (direction, workspace_id, tab_id, target_tab_id, target_pane_id, split, swap) in [
         (
             "left",
@@ -1471,7 +1471,7 @@ fn moving_directionally_across_containers_focuses_the_moved_pane_after_right_sid
             "tab-3-1",
             "pane-3-bottom-right",
             "down",
-            false,
+            true,
         ),
         (
             "down",
@@ -1509,6 +1509,120 @@ fn moving_directionally_across_containers_focuses_the_moved_pane_after_right_sid
             expected.push(snapshot_call());
         }
         assert_eq!(run.requests, expected);
+    }
+}
+
+#[test]
+fn vertical_boundary_moves_enter_before_a_target_to_preserve_a_left_anchor() {
+    for (
+        direction,
+        workspace_id,
+        tab_id,
+        target_workspace_id,
+        target_tab_id,
+        target_pane_id,
+        moved_pane_id,
+        anchor_x,
+        swap,
+    ) in [
+        (
+            "up",
+            "workspace-1",
+            "tab-1-1",
+            "workspace-3",
+            "tab-3-1",
+            "pane-up-target",
+            "pane-moved-up",
+            0.25,
+            true,
+        ),
+        (
+            "down",
+            "workspace-3",
+            "tab-3-1",
+            "workspace-1",
+            "tab-1-1",
+            "pane-down-target",
+            "pane-moved-down",
+            0.25,
+            true,
+        ),
+        (
+            "down",
+            "workspace-3",
+            "tab-3-1",
+            "workspace-1",
+            "tab-1-1",
+            "pane-equal-target",
+            "pane-moved-at-equality",
+            0.5,
+            false,
+        ),
+    ] {
+        let mut layouts = standard_layouts();
+        for (layout_id, pane_id) in [(tab_id, "pane-current"), (target_tab_id, target_pane_id)] {
+            let current = layouts
+                .as_array_mut()
+                .unwrap()
+                .iter_mut()
+                .find(|layout| layout["tab_id"] == layout_id)
+                .unwrap();
+            *current = layout(layout_id, vec![pane(pane_id, 0, 0, 100, 80)]);
+        }
+        let herdr = FakeHerdr::new(snapshot(layouts, standard_tabs(), standard_workspaces()))
+            .with_replies(
+                "pane.move",
+                [successful_move_reply(
+                    ("pane-current", workspace_id, tab_id),
+                    (moved_pane_id, target_workspace_id, target_tab_id),
+                    (
+                        None,
+                        layout(
+                            target_tab_id,
+                            vec![
+                                pane(target_pane_id, 0, 0, 50, 80),
+                                pane(moved_pane_id, 50, 0, 50, 80),
+                            ],
+                        ),
+                    ),
+                )],
+            );
+        let herdr = if swap {
+            herdr.with_replies("pane.swap", [swap_reply()])
+        } else {
+            herdr
+        };
+        herdr.write_state(
+            &json!({
+                "paneId": "pane-current",
+                "tabId": tab_id,
+                "workspaceId": workspace_id,
+                "x": anchor_x,
+                "y": 0.5,
+            })
+            .to_string(),
+        );
+
+        let run = herdr.run(workspace_id, tab_id, "pane-current", &["move", direction]);
+
+        run.assert_success();
+        let mut expected = vec![
+            snapshot_call(),
+            directional_move_call("pane-current", target_tab_id, target_pane_id, "down", !swap),
+        ];
+        if swap {
+            expected.push(swap_call(moved_pane_id, target_pane_id));
+        }
+        expected.push(focus_call(moved_pane_id));
+        assert_eq!(
+            run.requests, expected,
+            "{direction} with anchor x={anchor_x}"
+        );
+        let state = herdr.read_anchor_state();
+        assert_eq!(state["paneId"], moved_pane_id);
+        assert_eq!(state["tabId"], target_tab_id);
+        assert_eq!(state["workspaceId"], target_workspace_id);
+        assert_eq!(state["x"], anchor_x);
     }
 }
 
@@ -1643,29 +1757,49 @@ fn directional_move_stops_without_changes_when_herdr_declines_the_move() {
 
 #[test]
 fn directional_move_reports_partial_success_when_the_followup_swap_fails() {
-    let herdr = right_boundary_herdr(Err("target disappeared".to_owned()));
+    for (direction, workspace_id, tab_id, target_tab_id, target_pane_id, split, herdr) in [
+        (
+            "right",
+            "workspace-2",
+            "tab-2-3",
+            "tab-2-1",
+            "pane-2-1-top-left",
+            "right",
+            right_boundary_herdr(Err("target disappeared".to_owned())),
+        ),
+        (
+            "down",
+            "workspace-3",
+            "tab-3-1",
+            "tab-1-1",
+            "pane-down-target",
+            "down",
+            down_boundary_herdr(Err("target disappeared".to_owned())),
+        ),
+    ] {
+        let original_state = fs::read_to_string(herdr.state_path.join("focus-anchor.json")).ok();
+        let run = herdr.run(workspace_id, tab_id, "pane-current", &["move", direction]);
 
-    let run = herdr.run("workspace-2", "tab-2-3", "pane-current", &["move", "right"]);
-
-    assert_eq!(
-        run.assert_failure(),
-        "pane moved, but directional swap failed: pane.swap failed: target disappeared\n"
-    );
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            directional_move_call(
-                "pane-current",
-                "tab-2-1",
-                "pane-2-1-top-left",
-                "right",
-                false,
-            ),
-            swap_call("pane-new", "pane-2-1-top-left"),
-        ]
-    );
-    assert!(!herdr.state_path.join("focus-anchor.json").exists());
+        assert_eq!(
+            run.assert_failure(),
+            "pane moved, but directional swap failed: pane.swap failed: target disappeared\n",
+            "{direction} boundary move should report partial success"
+        );
+        assert_eq!(
+            run.requests,
+            [
+                snapshot_call(),
+                directional_move_call("pane-current", target_tab_id, target_pane_id, split, false),
+                swap_call("pane-new", target_pane_id),
+            ],
+            "{direction} boundary move should stop before anchor, focus, or balance"
+        );
+        assert_eq!(
+            fs::read_to_string(herdr.state_path.join("focus-anchor.json")).ok(),
+            original_state,
+            "{direction} boundary move should not record a new anchor"
+        );
+    }
 }
 
 #[test]
@@ -4242,6 +4376,42 @@ fn right_boundary_herdr(swap: Reply) -> FakeHerdr {
             )],
         )
         .with_replies("pane.swap", [swap])
+}
+
+fn down_boundary_herdr(swap: Reply) -> FakeHerdr {
+    let mut layouts = standard_layouts();
+    for (tab_id, pane_id) in [("tab-3-1", "pane-current"), ("tab-1-1", "pane-down-target")] {
+        let current = layouts
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|layout| layout["tab_id"] == tab_id)
+            .unwrap();
+        *current = layout(tab_id, vec![pane(pane_id, 0, 0, 100, 80)]);
+    }
+    let herdr = FakeHerdr::new(snapshot(layouts, standard_tabs(), standard_workspaces()))
+        .with_replies(
+            "pane.move",
+            [successful_move_reply(
+                ("pane-current", "workspace-3", "tab-3-1"),
+                ("pane-new", "workspace-1", "tab-1-1"),
+                (
+                    None,
+                    layout(
+                        "tab-1-1",
+                        vec![
+                            pane("pane-down-target", 0, 0, 50, 80),
+                            pane("pane-new", 50, 0, 50, 80),
+                        ],
+                    ),
+                ),
+            )],
+        )
+        .with_replies("pane.swap", [swap]);
+    herdr.write_state(
+        r#"{"paneId":"pane-current","tabId":"tab-3-1","workspaceId":"workspace-3","x":0.25,"y":0.5}"#,
+    );
+    herdr
 }
 
 fn reordered_tab_snapshot() -> Value {

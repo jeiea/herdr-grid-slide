@@ -122,3 +122,19 @@ The directional live scenario now covers a right-then-left round trip without in
 scenario count. The isolated connected-client fixture was removed after both clients detached and
 the server stopped. The headless suite still cannot observe individual client views. The two-client
 result demonstrates the [documented multi-client limitation](behavior.md#cross-container-focus-recovery).
+
+In the final 2026-09-15 vertical-side verification on macOS 26.6.2 arm64:
+
+| Check | Result |
+| --- | --- |
+| Targeted vertical socket integration tests | Left anchors for `Up` and `Down` used the new pane ID in `focus: false` move, swap, and focus order; equality kept `focus: true` without a swap; a failed vertical follow-up swap preserved the previous anchor and stopped before focus or balancing |
+| `mise run check` | 4 shell test scripts, 3 Rust unit tests, and 102 integration tests passed; release build succeeded |
+| `mise run test-herdr-0.8.0` | Official download and fixed SHA256 check passed; `herdr 0.8.0`; all 7 isolated live scenarios passed |
+| `mise run live-herdr` with Herdr 0.8.2 on PATH | `herdr 0.8.2`; all 7 isolated live scenarios passed |
+| `HERDR_TEST_VERSION='herdr 0.9.0' mise run live-herdr` | `herdr 0.9.0`; all 7 isolated live scenarios passed |
+
+The expanded vertical scenario keeps a right pane on the right through a pure round trip, keeps a
+left pane on the left through a pure round trip, and preserves a user-selected left side before
+both `Down` and the symmetric `Up`. Every vertical segment verifies the destination workspace and
+tab, moving terminal, server focus, reading order, unaffected panes, and finite successful
+`pane.focused` hooks. Each live run used isolated session resources that were removed afterward.
