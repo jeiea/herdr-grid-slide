@@ -575,6 +575,16 @@ fn move_pane_to_new_tab(context: &Context, client: &mut SocketClient) -> Result<
     if !moved.changed {
         return Ok(());
     }
+    let detached_pane_id = &moved.pane.pane_id;
+    // Herdr 0.9.0's pane.move --focus does not move shell client views
+    // (herdrdev/herdr#4153). Remove this once minimum Herdr includes its fix.
+    client
+        .request("pane.focus", json!({"pane_id": detached_pane_id}))
+        .map_err(|error| {
+            format!(
+                "pane moved to a new tab, but focusing detached pane {detached_pane_id} failed: {error}"
+            )
+        })?;
     if source + 1 == tabs.len() {
         return Ok(());
     }

@@ -10,9 +10,13 @@ the tag and GitHub release.
 1. Run `mise run bump -- <version>`, for example `mise run bump -- 0.1.1`.
 2. Run the [local quality gate](../README.md#checks).
 3. Run the [minimum-version live check](testing.md#test-the-minimum-supported-herdr-version)
-   with Herdr 0.8.0 and the 0.8.2 regression check. Record the platform, versions, and results.
-4. Merge the change to the default branch.
-5. Run the **Release** workflow from the default branch.
+   with Herdr 0.8.0, the 0.8.2 regression check, and the 0.9.0 live check. Record the platform,
+   versions, scenario counts, and results.
+4. In an isolated Herdr 0.9.0 session, run the
+   [connected-client `to-new-tab` checks](testing.md#verify-the-herdr-090-client-view) for middle
+   and last source tabs. Record the client view, server snapshot and logs, and next-input result.
+5. Merge the change to the default branch.
+6. Run the **Release** workflow from the default branch.
 
 The bump task requires a new `MAJOR.MINOR.PATCH` version. It stages and validates the plugin manifest,
 the root Cargo package, and the root package entry in `Cargo.lock`, then replaces each file atomically.

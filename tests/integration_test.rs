@@ -586,7 +586,7 @@ fn reports_when_the_tab_moved_but_automatic_balance_failed() {
 }
 
 #[test]
-fn moves_the_focused_pane_to_a_new_tab_immediately_after_its_source() {
+fn to_new_tab_places_the_new_tab_after_its_source_and_focuses_the_detached_pane() {
     // A tab in an earlier workspace makes a session-wide index differ from the
     // insertion slot inside workspace-2.
     let herdr = FakeHerdr::new(focused(
@@ -634,6 +634,7 @@ fn moves_the_focused_pane_to_a_new_tab_immediately_after_its_source() {
         [
             snapshot_call(),
             move_to_new_tab_call("pane-live", "workspace-2"),
+            focus_call("pane-moved"),
             tab_move_call("tab-created", 2),
         ]
     );
@@ -887,7 +888,7 @@ fn reports_when_the_created_tab_could_not_be_repositioned() {
 }
 
 #[test]
-fn leaves_a_new_tab_at_the_end_when_its_source_was_last() {
+fn to_new_tab_leaves_the_new_tab_at_the_end_and_focuses_the_detached_pane() {
     let herdr = FakeHerdr::new(focused(
         snapshot(
             json!([
@@ -920,6 +921,7 @@ fn leaves_a_new_tab_at_the_end_when_its_source_was_last() {
         [
             snapshot_call(),
             move_to_new_tab_call("pane-moving", "workspace-1"),
+            focus_call("pane-moved"),
         ]
     );
 }
@@ -974,6 +976,39 @@ fn stops_when_herdr_declines_the_new_tab_move() {
 }
 
 #[test]
+fn to_new_tab_reports_partial_success_when_the_detached_pane_could_not_be_focused() {
+    let herdr = FakeHerdr::new(focused(
+        standard_snapshot(),
+        "workspace-2",
+        "tab-2-1",
+        "pane-2-1-top-left",
+    ))
+    .with_replies("pane.move", [new_tab_reply("tab-created")])
+    .with_replies("pane.focus", [Err("pane not found".to_owned())])
+    .with_replies("tab.move", [tab_move_reply()]);
+
+    let run = herdr.run(
+        "workspace-2",
+        "tab-2-1",
+        "pane-2-1-top-left",
+        &["to-new-tab"],
+    );
+
+    assert_eq!(
+        run.assert_failure(),
+        "pane moved to a new tab, but focusing detached pane pane-moved failed: pane.focus failed: pane not found\n"
+    );
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            move_to_new_tab_call("pane-2-1-top-left", "workspace-2"),
+            focus_call("pane-moved"),
+        ]
+    );
+}
+
+#[test]
 fn reports_when_a_moved_pane_response_omits_the_created_tab_id() {
     let herdr = FakeHerdr::new(focused(
         standard_snapshot(),
@@ -999,6 +1034,7 @@ fn reports_when_a_moved_pane_response_omits_the_created_tab_id() {
         [
             snapshot_call(),
             move_to_new_tab_call("pane-2-1-top-left", "workspace-2"),
+            focus_call("pane-moved"),
         ]
     );
 }
@@ -1033,6 +1069,7 @@ fn reports_when_the_pane_moved_but_the_new_tab_could_not_be_repositioned() {
         [
             snapshot_call(),
             move_to_new_tab_call("pane-2-1-top-left", "workspace-2"),
+            focus_call("pane-moved"),
             tab_move_call("tab-created", 1),
         ]
     );

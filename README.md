@@ -5,8 +5,9 @@ A plugin born from the idea of focusing and moving panes with hjkl.
 ## Support
 
 Minimum Herdr version: **0.8.0**. Release targets: macOS and Linux, each on arm64 and x86_64.
-The six live scenarios passed on macOS arm64 with Herdr 0.8.0 and 0.8.2; other platforms and
-versions have not been exercised in that run. See [verification details](docs/testing.md#recorded-results).
+The seven live scenarios passed on macOS arm64 with Herdr 0.8.0, 0.8.2, and 0.9.0; other
+platforms and versions have not been exercised in that run. See
+[verification details](docs/testing.md#recorded-results).
 
 ## Install
 
@@ -33,7 +34,8 @@ a temporary tab may appear. See [movement and balancing](docs/behavior.md) for c
 
 With mise and the configured Rust and ShellCheck installed, run `mise run check` for the local
 quality gate. On macOS arm64, `mise run test-herdr-0.8.0` downloads and tests the minimum version.
-With Herdr 0.8.2 on PATH, `mise run live-herdr` runs six isolated session scenarios.
+With Herdr 0.8.2 on PATH, `mise run live-herdr` runs seven isolated session scenarios. Set
+`HERDR_TEST_VERSION='herdr 0.9.0'` to check an installed Herdr 0.9.0 instead.
 See [verification prerequisites](docs/testing.md#test-the-minimum-supported-herdr-version)
 and the [release procedure](docs/releasing.md).
 

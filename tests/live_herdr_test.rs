@@ -88,6 +88,68 @@ fn move_right_crosses_into_the_next_tab_and_keeps_focus() {
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
+fn to_new_tab_places_the_detached_pane_in_the_next_tab_and_sets_server_focus_to_it() {
+    let mut live = LiveHerdr::start().expect("start isolated Herdr session");
+    let source = live
+        .create_workspace("new-tab-source")
+        .expect("create source workspace");
+    let moving = live
+        .split_pane(&source.root_pane_id, "right", true)
+        .expect("create focused moving pane");
+    let trailing = live
+        .create_tab(&source.workspace_id, "new-tab-trailing")
+        .expect("create trailing tab");
+    live.focus_tab(&source.tab_id).expect("focus source tab");
+    live.link_plugin().expect("link copied plugin");
+
+    let before = live.snapshot().expect("capture pre-action snapshot");
+    let moving_terminal_id = terminal_id(&before, &moving);
+    assert_eq!(focused_pane_id(&before), moving);
+
+    // The headless harness covers real server requests and state, not client views.
+    live.invoke_action("to-new-tab")
+        .expect("invoke to-new-tab and wait for its log");
+
+    let after = live.snapshot().expect("capture post-action snapshot");
+    let moved = pane_by_terminal_id(&after, &moving_terminal_id);
+    let moved_pane_id = moved["pane_id"].as_str().expect("moved pane ID");
+    let created_tab_id = moved["tab_id"].as_str().expect("created tab ID");
+    let tab_order: Vec<_> = after["tabs"]
+        .as_array()
+        .expect("snapshot tab list")
+        .iter()
+        .filter(|tab| tab["workspace_id"] == source.workspace_id)
+        .map(|tab| tab["tab_id"].as_str().expect("tab ID"))
+        .collect();
+
+    assert_eq!(
+        tab_order,
+        [
+            source.tab_id.as_str(),
+            created_tab_id,
+            trailing.tab_id.as_str()
+        ]
+    );
+    assert_eq!(moved["workspace_id"], source.workspace_id);
+    assert_eq!(moved["focused"], true);
+    assert_eq!(after["focused_tab_id"], created_tab_id);
+    assert_eq!(focused_pane_id(&after), moved_pane_id);
+    assert_eq!(
+        pane_ids_in_tab(&after, &source.tab_id),
+        BTreeSet::from([source.root_pane_id.clone()])
+    );
+    assert_eq!(
+        pane_ids_in_tab(&after, created_tab_id),
+        BTreeSet::from([moved_pane_id.to_owned()])
+    );
+    assert_eq!(
+        pane_ids_in_tab(&after, &trailing.tab_id),
+        BTreeSet::from([trailing.root_pane_id])
+    );
+}
+
+#[test]
+#[ignore = "requires Herdr and starts an isolated named session"]
 fn move_up_then_down_returns_the_right_pane_to_the_right_side_of_its_original_tab() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let previous = live
