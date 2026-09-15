@@ -18,7 +18,7 @@ type Reply = Result<Value, String>;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 #[test]
-fn moves_tabs_in_visible_workspace_order_and_wraps_both_ends() {
+fn moving_a_focused_leader_tab_in_visible_workspace_order_focuses_its_new_destination_id() {
     for (direction, number, target) in [
         ("next", 2, "workspace-last"),
         ("previous", 2, "workspace-first"),
@@ -47,7 +47,8 @@ fn moves_tabs_in_visible_workspace_order_and_wraps_both_ends() {
                 move_to_new_workspace_call_with(
                     "pane-live",
                     json!({"type": "new_tab", "workspace_id": target})
-                )
+                ),
+                focus_call("pane-moved"),
             ]
         );
     }
@@ -75,7 +76,7 @@ fn ignores_moving_a_tab_when_there_is_only_one_workspace() {
 }
 
 #[test]
-fn moves_the_focused_tab_to_a_new_workspace_immediately_after_its_source() {
+fn moving_a_focused_leader_tab_to_a_new_workspace_focuses_its_new_id_before_placement() {
     let before = tab_to_new_workspace_before_snapshot();
     let after = tab_workspace_after_snapshot(None);
     let herdr = FakeHerdr::new(before.clone())
@@ -114,6 +115,7 @@ fn moves_the_focused_tab_to_a_new_workspace_immediately_after_its_source() {
             snapshot_call(),
             move_to_new_workspace_call("pane-live"),
             move_call("pane-stays", join_destination("tab-created", "pane-moved")),
+            focus_call("pane-moved"),
             workspace_move_call("workspace-created", 2),
             snapshot_call(),
             export_call_for("tab-created"),
@@ -169,6 +171,7 @@ fn waits_for_the_balance_lock_before_moving_the_tab() {
             snapshot_call(),
             move_to_new_workspace_call_with("pane-live", tab_workspace_destination(target, None)),
             move_call("pane-stays", join_destination("tab-created", "pane-moved")),
+            focus_call("pane-moved"),
             workspace_move_call("workspace-created", 2),
             snapshot_call(),
             export_call_for("tab-created"),
@@ -245,29 +248,38 @@ fn restores_focus_to_the_later_pane_after_moving_a_tab_between_workspaces() {
 #[test]
 fn reports_when_the_tab_moved_but_refocusing_failed() {
     for (target, arguments) in tab_workspace_commands("workspace-last") {
-        let before = focused(
-            tab_workspace_before_snapshot(target),
-            "workspace-source",
-            "tab-source",
-            "pane-stays",
-        );
-        let herdr = FakeHerdr::new(before)
-            .with_replies("pane.move", [tab_workspace_reply(target), move_reply()])
-            .with_replies("pane.focus", [Err("pane not found".to_owned())]);
+        for (focused_pane_id, moved_focus_id) in
+            [("pane-live", "pane-moved"), ("pane-stays", "pane-stays")]
+        {
+            let before = focused(
+                tab_workspace_before_snapshot(target),
+                "workspace-source",
+                "tab-source",
+                focused_pane_id,
+            );
+            let herdr = FakeHerdr::new(before)
+                .with_replies("pane.move", [tab_workspace_reply(target), move_reply()])
+                .with_replies("pane.focus", [Err("pane not found".to_owned())]);
 
-        let run = herdr.run("workspace-source", "tab-source", "pane-stays", arguments);
+            let run = herdr.run("workspace-source", "tab-source", focused_pane_id, arguments);
 
-        assert_eq!(
-            run.assert_failure(),
-            "tab moved, but refocusing pane-stays failed: pane.focus failed: pane not found\n"
-        );
-        let expected = vec![
-            snapshot_call(),
-            move_to_new_workspace_call_with("pane-live", tab_workspace_destination(target, None)),
-            move_call("pane-stays", join_destination("tab-created", "pane-moved")),
-            focus_call("pane-stays"),
-        ];
-        assert_eq!(run.requests, expected);
+            assert_eq!(
+                run.assert_failure(),
+                format!(
+                    "tab moved, but refocusing {moved_focus_id} failed: pane.focus failed: pane not found\n"
+                )
+            );
+            let expected = vec![
+                snapshot_call(),
+                move_to_new_workspace_call_with(
+                    "pane-live",
+                    tab_workspace_destination(target, None),
+                ),
+                move_call("pane-stays", join_destination("tab-created", "pane-moved")),
+                focus_call(moved_focus_id),
+            ];
+            assert_eq!(run.requests, expected);
+        }
     }
 }
 
@@ -306,7 +318,11 @@ fn leaves_a_new_workspace_at_the_end_when_its_source_was_last() {
     run.assert_success();
     assert_eq!(
         run.requests,
-        [snapshot_call(), move_to_new_workspace_call("pane-moving")]
+        [
+            snapshot_call(),
+            move_to_new_workspace_call("pane-moving"),
+            focus_call("pane-moved"),
+        ]
     );
 }
 
@@ -324,7 +340,7 @@ fn ignores_moving_the_only_tab_to_a_new_workspace() {
 }
 
 #[test]
-fn moves_a_single_pane_tab_without_balancing() {
+fn moving_a_focused_single_pane_tab_between_workspaces_focuses_its_new_id_without_balancing() {
     for (target, arguments) in tab_workspace_commands("workspace-next") {
         let mut before = single_pane_tab_snapshot();
         if target.is_some() {
@@ -338,6 +354,7 @@ fn moves_a_single_pane_tab_without_balancing() {
         let expected = vec![
             snapshot_call(),
             move_to_new_workspace_call_with("pane-moving", tab_workspace_destination(target, None)),
+            focus_call("pane-moved"),
             workspace_move_call("workspace-created", 1),
         ];
         assert_eq!(run.requests, tab_workspace_calls(target, expected));
@@ -364,6 +381,7 @@ fn keeps_a_custom_tab_label_on_the_new_workspace() {
         [
             snapshot_call(),
             move_to_labeled_new_workspace_call("pane-moving", "build"),
+            focus_call("pane-moved"),
             workspace_move_call("workspace-created", 1),
         ]
     );
@@ -417,7 +435,11 @@ fn reports_when_a_moved_pane_response_omits_the_created_workspace_id() {
     );
     assert_eq!(
         run.requests,
-        [snapshot_call(), move_to_new_workspace_call("pane-moving")]
+        [
+            snapshot_call(),
+            move_to_new_workspace_call("pane-moving"),
+            focus_call("pane-moved"),
+        ]
     );
 }
 
@@ -544,6 +566,7 @@ fn reports_when_the_tab_moved_but_the_new_workspace_could_not_be_repositioned() 
                 "pane-2-1-bottom-right",
                 join_destination("tab-created", "pane-followed-1")
             ),
+            focus_call("pane-moved"),
             workspace_move_call("workspace-created", 2),
         ]
     );
@@ -576,6 +599,7 @@ fn reports_when_the_tab_moved_but_automatic_balance_failed() {
             snapshot_call(),
             move_to_new_workspace_call_with("pane-live", tab_workspace_destination(target, None)),
             move_call("pane-stays", join_destination("tab-created", "pane-moved")),
+            focus_call("pane-moved"),
             workspace_move_call("workspace-created", 2),
             snapshot_call(),
             export_call_for("tab-created"),
@@ -1076,21 +1100,71 @@ fn reports_when_the_pane_moved_but_the_new_tab_could_not_be_repositioned() {
 }
 
 #[test]
-fn moves_wrap_by_visible_workspace_number_and_tab_order() {
-    let herdr = FakeHerdr::new(standard_snapshot());
-
-    for (scope, direction, workspace_id, tab_id, target_tab_id) in [
-        ("workspace", "next", "workspace-3", "tab-3-1", "tab-1-1"),
-        ("workspace", "previous", "workspace-1", "tab-1-1", "tab-3-1"),
-        ("tab", "next", "workspace-2", "tab-2-3", "tab-2-1"),
-        ("tab", "previous", "workspace-2", "tab-2-1", "tab-2-3"),
+fn moving_a_pane_across_tab_or_workspace_edges_focuses_it_in_the_wrapped_destination() {
+    for (
+        scope,
+        direction,
+        workspace_id,
+        tab_id,
+        target_workspace_id,
+        target_tab_id,
+        moved_pane_id,
+    ) in [
+        (
+            "workspace",
+            "next",
+            "workspace-3",
+            "tab-3-1",
+            "workspace-1",
+            "tab-1-1",
+            "pane-moved",
+        ),
+        (
+            "workspace",
+            "previous",
+            "workspace-1",
+            "tab-1-1",
+            "workspace-3",
+            "tab-3-1",
+            "pane-moved",
+        ),
+        (
+            "tab",
+            "next",
+            "workspace-2",
+            "tab-2-3",
+            "workspace-2",
+            "tab-2-1",
+            "pane-current",
+        ),
+        (
+            "tab",
+            "previous",
+            "workspace-2",
+            "tab-2-1",
+            "workspace-2",
+            "tab-2-3",
+            "pane-current",
+        ),
     ] {
+        let herdr = FakeHerdr::new(standard_snapshot()).with_replies(
+            "pane.move",
+            [successful_move_reply(
+                ("pane-current", workspace_id, tab_id),
+                (moved_pane_id, target_workspace_id, target_tab_id),
+                (
+                    None,
+                    layout(target_tab_id, vec![pane(moved_pane_id, 0, 0, 100, 100)]),
+                ),
+            )],
+        );
         let run = herdr.run(workspace_id, tab_id, "pane-current", &[scope, direction]);
 
         run.assert_success();
         let mut expected = vec![
             call("session.snapshot", json!({})),
             call("pane.move", move_to_tab("pane-current", target_tab_id)),
+            focus_call(moved_pane_id),
         ];
         if scope == "tab" {
             expected.push(snapshot_call());
@@ -1100,7 +1174,7 @@ fn moves_wrap_by_visible_workspace_number_and_tab_order() {
 }
 
 #[test]
-fn moves_follow_reordered_tab_snapshot_order() {
+fn moving_a_pane_between_reordered_tabs_focuses_it_in_the_display_order_destination() {
     let herdr = FakeHerdr::new(reordered_tab_snapshot());
 
     for (direction, target_tab_id) in [("next", "tab-b"), ("previous", "tab-c")] {
@@ -1112,6 +1186,7 @@ fn moves_follow_reordered_tab_snapshot_order() {
             [
                 snapshot_call(),
                 call("pane.move", move_to_tab("pane-a", target_tab_id)),
+                focus_call("pane-a"),
                 snapshot_call(),
             ]
         );
@@ -1369,7 +1444,7 @@ fn focus_wraps_across_tabs_and_workspaces_in_visual_order() {
 }
 
 #[test]
-fn directional_moves_cross_container_boundaries_and_only_enter_before_the_target_on_the_right() {
+fn moving_directionally_across_containers_focuses_the_moved_pane_after_right_side_placement() {
     for (direction, workspace_id, tab_id, target_tab_id, target_pane_id, split, swap) in [
         (
             "left",
@@ -1429,6 +1504,7 @@ fn directional_moves_cross_container_boundaries_and_only_enter_before_the_target
         if swap {
             expected.push(swap_call("pane-current", target_pane_id));
         }
+        expected.push(focus_call("pane-current"));
         if matches!(direction, "left" | "right") {
             expected.push(snapshot_call());
         }
@@ -1473,7 +1549,7 @@ fn directional_moves_remember_the_cross_axis_anchor_across_swaps() {
 }
 
 #[test]
-fn directional_move_uses_the_live_context_and_new_pane_id_across_workspaces() {
+fn moving_down_uses_the_live_snapshot_and_focuses_the_new_pane_id_across_workspaces() {
     let mut layouts = standard_layouts();
     let current = layouts
         .as_array_mut()
@@ -1519,6 +1595,7 @@ fn directional_move_uses_the_live_context_and_new_pane_id_across_workspaces() {
         [
             snapshot_call(),
             directional_move_call("pane-live", "tab-1-1", "pane-1-top-left", "down", true,),
+            focus_call("pane-new"),
         ]
     );
     let state = herdr.read_anchor_state();
@@ -1640,6 +1717,38 @@ fn directional_move_preserves_partial_success_context_for_an_invalid_swap_respon
 }
 
 #[test]
+fn moving_right_to_another_tab_records_the_new_anchor_then_stops_before_balance_when_focus_fails() {
+    let herdr = right_boundary_herdr(swap_reply())
+        .with_replies("pane.focus", [Err("pane not found".to_owned())]);
+
+    let run = herdr.run("workspace-2", "tab-2-3", "pane-current", &["move", "right"]);
+
+    assert_eq!(
+        run.assert_failure(),
+        "pane moved, but focusing pane-new failed: pane.focus failed: pane not found\n"
+    );
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            directional_move_call(
+                "pane-current",
+                "tab-2-1",
+                "pane-2-1-top-left",
+                "right",
+                false,
+            ),
+            swap_call("pane-new", "pane-2-1-top-left"),
+            focus_call("pane-new"),
+        ]
+    );
+    let state = herdr.read_anchor_state();
+    assert_eq!(state["paneId"], "pane-new");
+    assert_eq!(state["tabId"], "tab-2-1");
+    assert_eq!(state["workspaceId"], "workspace-2");
+}
+
+#[test]
 fn directional_move_leaves_its_own_target_unchanged() {
     let herdr = FakeHerdr::new(snapshot(
         json!([layout("tab-only", vec![pane("pane-only", 0, 0, 100, 80)])]),
@@ -1660,7 +1769,7 @@ fn directional_move_leaves_its_own_target_unchanged() {
 }
 
 #[test]
-fn horizontal_directional_move_reports_partial_success_when_balance_fails() {
+fn moving_left_focuses_the_destination_pane_before_reporting_automatic_balance_failure() {
     let before = focused(
         snapshot(
             json!([
@@ -1730,6 +1839,7 @@ fn horizontal_directional_move_reports_partial_success_when_balance_fails() {
                 "right",
                 true,
             ),
+            focus_call("pane-moving"),
             snapshot_call(),
             export_call_for("tab-destination"),
             snapshot_call(),
@@ -1822,6 +1932,7 @@ fn move_uses_live_snapshot_context_instead_of_stale_environment() {
         [
             snapshot_call(),
             call("pane.move", move_to_tab("pane-live", "tab-2-2")),
+            focus_call("pane-live"),
             snapshot_call(),
         ]
     );
@@ -1863,6 +1974,7 @@ fn tab_move_balances_the_destination_even_when_its_pane_set_is_cached() {
         [
             snapshot_call(),
             call("pane.move", move_to_tab("pane-moving", "tab-destination")),
+            focus_call("pane-moving"),
             snapshot_call(),
             export_call_for("tab-destination"),
             ratio_call_for("tab-destination", &[], 0.5),
@@ -1905,6 +2017,32 @@ fn tab_move_skips_balance_when_herdr_does_not_move_the_pane() {
 }
 
 #[test]
+fn moving_a_pane_to_another_tab_stops_before_balance_when_destination_focus_fails() {
+    let herdr = FakeHerdr::new(tab_move_before_snapshot())
+        .with_replies("pane.focus", [Err("pane not found".to_owned())]);
+
+    let run = herdr.run(
+        "workspace-1",
+        "tab-source",
+        "pane-moving",
+        &["tab", "previous"],
+    );
+
+    assert_eq!(
+        run.assert_failure(),
+        "pane moved, but focusing pane-moving failed: pane.focus failed: pane not found\n"
+    );
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            call("pane.move", move_to_tab("pane-moving", "tab-destination")),
+            focus_call("pane-moving"),
+        ]
+    );
+}
+
+#[test]
 fn tab_move_does_not_force_the_destination_after_focus_reaches_another_tab() {
     let before = tab_move_before_snapshot();
     let user_tab = tab_move_after_snapshot("tab-user", "pane-user-a");
@@ -1927,6 +2065,7 @@ fn tab_move_does_not_force_the_destination_after_focus_reaches_another_tab() {
         [
             snapshot_call(),
             call("pane.move", move_to_tab("pane-moving", "tab-destination")),
+            focus_call("pane-moving"),
             snapshot_call(),
         ]
     );

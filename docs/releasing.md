@@ -13,8 +13,10 @@ the tag and GitHub release.
    with Herdr 0.8.0, the 0.8.2 regression check, and the 0.9.0 live check. Record the platform,
    versions, scenario counts, and results.
 4. In an isolated Herdr 0.9.0 session, run the
-   [connected-client `to-new-tab` checks](testing.md#verify-the-herdr-090-client-view) for middle
-   and last source tabs. Record the client view, server snapshot and logs, and next-input result.
+   [connected-client cross-container checks](testing.md#verify-herdr-090-connected-client-views).
+   Include actual left/right keys, direct tab/workspace moves, a leading-pane whole-tab move,
+   `to-new-tab`, unchanged tab/workspace creation, and one two-client move. Record client views,
+   server snapshots, completed logs, next-input results, and the expected two-client limitation.
 5. Merge the change to the default branch.
 6. Run the **Release** workflow from the default branch.
 

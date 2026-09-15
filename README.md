@@ -26,9 +26,13 @@ and either `sha256sum` or `shasum`. Release binary installation does not require
 it does nothing when that tab is the workspace's only tab. Previous/next workspace tab actions
 append an independent tab at the destination, closing the source workspace if it becomes empty.
 
+Successful pane moves across tab or workspace boundaries keep the server focus and connected
+shell view on the moved pane. See [movement and balancing](docs/behavior.md) for compensation
+timing, partial-success behavior, and the current multi-client limitation.
+
 Tabs are automatically balanced when a focus event observes a tab entry, changed panes, or
 changed area, and on certain move paths. Balancing can change split structure and proportions;
-a temporary tab may appear. See [movement and balancing](docs/behavior.md) for conditions and examples.
+a temporary tab may appear.
 
 ## Checks
 

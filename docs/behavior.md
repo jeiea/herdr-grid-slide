@@ -23,6 +23,38 @@ Action: to-new-workspace
 After:  W1 [keep] | new W [A B* C] | W2 [other]
 ```
 
+## Cross-container focus recovery
+
+After a successful public pane move crosses a tab or workspace boundary, both Herdr's server focus
+and connected shell client view point to the moved pane in its destination. The plugin explicitly
+focuses that pane because affected Herdr releases, including 0.9.0, can update server focus for
+`pane.move` without projecting the move to connected client views.
+
+The compensation runs once at the final structural boundary of each logical move:
+
+- Direct previous/next tab or workspace moves focus the pane returned by `pane.move`, before any
+  destination balancing.
+- Directional moves focus the returned pane after anchor state is recorded and, for a rightward
+  boundary move, after the required swap, but before automatic balancing.
+- Whole-tab workspace moves focus after every following pane has joined the destination. A focused
+  leading pane uses the new ID from the leading move response; a focused later pane uses the old ID
+  alias that supported Herdr versions resolve to its moved pane.
+- `to-new-tab` focuses the detached pane before positioning its new tab.
+
+If this focus request fails, the structural move remains complete but later balancing or new
+tab/workspace positioning does not start. A failed or refused rightward follow-up swap is earlier:
+the pane remains in the destination tab, the connected view remains on the source tab, no focus
+compensation is sent, and no new anchor is recorded. Same-tab swaps, splits, pane creation, and
+internal `focus: false` balancing moves do not receive this compensation.
+
+The public `pane.focus` request projects to every connected shell client in the same server. A move
+started from one shell can therefore switch other shells to the destination tab because the plugin
+does not receive an invoking-client identifier. This limitation remains preferable to leaving the
+invoking view behind. The workaround for `pane.move --focus` may be removed only after an upstream
+[#4153](https://github.com/herdrdev/herdr/issues/4153) fix is in every supported release and the
+connected-view checks pass without it. Rightward compensation additionally requires evidence that
+`pane.move(focus: false)` followed by `pane.swap` projects the client view by itself.
+
 ## Automatic balancing
 
 The `pane.focused` hook observes the focused tab, its pane set, and its occupied area. A tab entry

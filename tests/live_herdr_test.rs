@@ -54,7 +54,7 @@ fn move_right_swaps_panes_in_the_same_tab_and_keeps_focus() {
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
-fn move_right_crosses_into_the_next_tab_and_keeps_focus() {
+fn move_right_then_left_crosses_the_tab_boundary_and_keeps_focus() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let source = live
         .create_workspace("tab-boundary-source")
@@ -74,16 +74,30 @@ fn move_right_crosses_into_the_next_tab_and_keeps_focus() {
     live.invoke_action("move-right")
         .expect("invoke move-right and wait for its log");
 
-    let after = live.snapshot().expect("capture post-action snapshot");
+    let after_right = live.snapshot().expect("capture post-right snapshot");
     assert_eq!(
-        pane_ids_in_tab(&after, &source.tab_id),
+        pane_ids_in_tab(&after_right, &source.tab_id),
         BTreeSet::from([source.root_pane_id.clone()])
     );
     assert_eq!(
-        pane_ids_in_tab(&after, &destination.tab_id),
+        pane_ids_in_tab(&after_right, &destination.tab_id),
         BTreeSet::from([destination.root_pane_id.clone(), moving.clone()])
     );
-    assert_eq!(focused_pane_id(&after), moving);
+    assert_eq!(focused_pane_id(&after_right), moving);
+
+    live.invoke_action("move-left")
+        .expect("invoke move-left and wait for its log");
+
+    let after_left = live.snapshot().expect("capture post-left snapshot");
+    assert_eq!(
+        pane_ids_in_tab(&after_left, &source.tab_id),
+        BTreeSet::from([source.root_pane_id.clone(), moving.clone()])
+    );
+    assert_eq!(
+        pane_ids_in_tab(&after_left, &destination.tab_id),
+        BTreeSet::from([destination.root_pane_id.clone()])
+    );
+    assert_eq!(focused_pane_id(&after_left), moving);
 }
 
 #[test]

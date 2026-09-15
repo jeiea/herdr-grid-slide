@@ -486,7 +486,13 @@ fn move_pane(
         return Ok(());
     }
     let moved = request_pane_move(client, &pane_id, tab_edge(&target_tab_id), true)?;
-    if !moved.changed || !matches!(scope, Scope::Tab) {
+    if !moved.changed {
+        return Ok(());
+    }
+    let moved_pane_id = &moved.pane.pane_id;
+    focus_moved_pane(client, moved_pane_id)
+        .map_err(|error| format!("pane moved, but focusing {moved_pane_id} failed: {error}"))?;
+    if !matches!(scope, Scope::Tab) {
         return Ok(());
     }
     balance_focused_pane(context, client, Some(&target_tab_id))
@@ -576,15 +582,11 @@ fn move_pane_to_new_tab(context: &Context, client: &mut SocketClient) -> Result<
         return Ok(());
     }
     let detached_pane_id = &moved.pane.pane_id;
-    // Herdr 0.9.0's pane.move --focus does not move shell client views
-    // (herdrdev/herdr#4153). Remove this once minimum Herdr includes its fix.
-    client
-        .request("pane.focus", json!({"pane_id": detached_pane_id}))
-        .map_err(|error| {
-            format!(
-                "pane moved to a new tab, but focusing detached pane {detached_pane_id} failed: {error}"
-            )
-        })?;
+    focus_moved_pane(client, detached_pane_id).map_err(|error| {
+        format!(
+            "pane moved to a new tab, but focusing detached pane {detached_pane_id} failed: {error}"
+        )
+    })?;
     if source + 1 == tabs.len() {
         return Ok(());
     }
@@ -659,16 +661,13 @@ fn move_tab_workspace(
         return Ok(());
     }
     let created_tab_id = follow_leader(client, &moved, leader, following, navigation.tab_id)?;
-    if *leader != navigation.pane_id {
-        client
-            .request("pane.focus", json!({"pane_id": navigation.pane_id}))
-            .map_err(|error| {
-                format!(
-                    "tab moved, but refocusing {} failed: {error}",
-                    navigation.pane_id
-                )
-            })?;
-    }
+    let moved_focus_id = if *leader == navigation.pane_id {
+        moved.pane.pane_id.as_str()
+    } else {
+        navigation.pane_id
+    };
+    focus_moved_pane(client, moved_focus_id)
+        .map_err(|error| format!("tab moved, but refocusing {moved_focus_id} failed: {error}"))?;
     if direction.is_none() && source + 1 < workspaces.len() {
         let created_workspace = moved.created_workspace.as_ref().ok_or(
             "tab moved to a new workspace, but herdr api pane.move response is missing the created workspace id",
@@ -872,6 +871,12 @@ fn move_directionally(
     }
     next_state.pane_id = moved_pane_id;
     write_focus_anchor_state(state_dir, &next_state)?;
+    focus_moved_pane(client, &next_state.pane_id).map_err(|error| {
+        format!(
+            "pane moved, but focusing {} failed: {error}",
+            next_state.pane_id
+        )
+    })?;
     if direction.is_horizontal() {
         balance_focused_pane(context, client, Some(&target_tab_id))
             .map_err(|error| format!("pane moved, but automatic balance failed: {error}"))?;
@@ -1321,6 +1326,16 @@ fn request_pane_move(
     Ok(serde_json::from_value::<PaneMoveResult>(result)
         .map_err(|_| "herdr api pane.move returned an invalid response".to_owned())?
         .move_result)
+}
+
+/// Herdr 0.9.0 does not project `pane.move --focus` to connected shell client
+/// views (herdrdev/herdr#4153), and a rightward `focus: false` move followed by
+/// `pane.swap` has the same gap. Remove this compensation only after every
+/// supported Herdr projects both forms to the destination tab.
+fn focus_moved_pane(client: &mut SocketClient, pane_id: &str) -> Result<()> {
+    client
+        .request("pane.focus", json!({"pane_id": pane_id}))
+        .map(|_| ())
 }
 
 fn request_pane_swap(

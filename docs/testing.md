@@ -30,11 +30,12 @@ To exercise an installed Herdr 0.9.0:
 HERDR_TEST_VERSION='herdr 0.9.0' mise run live-herdr
 ```
 
-The `to-new-tab` scenario invokes the registered action and checks that the detached pane is in
-the next tab, tab membership is preserved, and the server focuses the new tab and pane. This is a
-headless server smoke test: it verifies that Herdr accepts the requests and preserves final server
-state, but it cannot automatically detect a regression where a connected shell client remains on
-the source tab.
+The scenarios invoke `move-left`, `move-right`, `move-up`, `move-down`, `to-new-tab`,
+`to-new-workspace`, `tab-to-next-workspace`, and `tab-to-previous-workspace`. They cover a
+horizontal tab-boundary round trip, vertical workspace moves, and whole-tab moves. The non-leading
+`to-new-workspace` case also guards the old pane-ID alias used to refocus a follower after its tab
+moves. This is a headless server smoke test: it verifies that Herdr accepts the requests and
+preserves final server state, but it cannot observe which tab each connected shell client displays.
 
 ## Test the minimum supported Herdr version
 
@@ -49,23 +50,30 @@ The [task](../.mise/tasks/test-herdr-0.8.0.sh) downloads the official 0.8.0 bina
 fixed SHA256, runs the seven isolated scenarios, and removes the temporary download. Other
 platforms and checksum mismatches are rejected before execution. No global installation is changed.
 
-## Verify the Herdr 0.9.0 client view
+## Verify Herdr 0.9.0 connected-client views
 
 Use a named session with separate configuration, state, and runtime directories; do not use a
-normal working session. Connect one shell client, prepare a two-pane source tab, and invoke the
-registered `to-new-tab` action from both a middle source tab and the last source tab. For each case,
-confirm the new tab position, the detached pane shown and focused in the client, matching server
-logs and snapshot focus, and focus stability after the next key input.
+normal working session. Link a temporary copy of the plugin into that session and record the exact
+key bindings used. With one connected shell client and the smallest practical fixture:
+
+1. Use the actual left and right directional keys to cross a tab boundary in both directions.
+2. Invoke direct next-tab and next-workspace pane moves.
+3. Move a whole multi-pane tab to a new workspace while its leading pane is focused.
+4. Invoke `to-new-tab`, then use the normal new-tab and new-workspace keys as negative cases.
+
+For every move, compare the displayed workspace/tab header and pane body with the server snapshot,
+confirm the action and any `pane.focused` hooks finish without repetition, then enter another shell
+command to verify that input still reaches the displayed pane. Repeat one representative move with
+two connected shell clients and confirm that both views switch to the destination. Compare that
+result with the [documented multi-client limitation](behavior.md#cross-container-focus-recovery).
 
 For diagnosis, follow [Herdr issue #4153](https://github.com/herdrdev/herdr/issues/4153): on
 Herdr 0.9.0, `pane.move --new-tab --focus` can update server focus while the connected client stays
 on the source tab. A separate `pane.focus` for the pane ID returned by the move should switch the
-client and keep server and screen focus aligned after input. The workaround may also switch other
-shell clients in the session because the plugin cannot identify only the invoking client.
+client and keep server and screen focus aligned after input.
 
-Remove the explicit focus only after an upstream #4153 fix is released, the minimum supported Herdr
-version excludes affected releases, and both the live smoke and these connected-client checks pass
-without the workaround.
+See [cross-container focus recovery](behavior.md#cross-container-focus-recovery) for the workaround
+rationale, multi-client constraint, and removal gates.
 
 ## Recorded results
 
@@ -97,3 +105,20 @@ On 2026-09-15, macOS 26.6.2 arm64:
 
 The 0.8.0 result keeps `min_herdr_version = "0.8.0"`. The connected-client checks cover the
 0.9.0 view behavior that the seven headless scenarios cannot observe.
+
+Later on 2026-09-15, macOS 26.6.2 arm64:
+
+| Check | Result |
+| --- | --- |
+| `mise run check` | 4 shell test scripts, 3 Rust unit tests, and 101 integration tests passed; release build succeeded |
+| `mise run test-herdr-0.8.0` | Official download and fixed SHA256 check passed; `herdr 0.8.0`; all 7 isolated live scenarios passed |
+| `mise run live-herdr` with Herdr 0.8.2 on PATH | `herdr 0.8.2`; all 7 isolated live scenarios passed |
+| `HERDR_TEST_VERSION='herdr 0.9.0' mise run live-herdr` | `herdr 0.9.0`; all 7 isolated live scenarios passed |
+| Non-leading whole-tab alias guard | On 0.8.0, 0.8.2, and 0.9.0, the moved follower changed from `w1:p4` to `w3:p3`, and focusing its old `w1:p4` alias selected `w3:p3` |
+| Herdr 0.9.0 connected-client acceptance | Actual left/right keys, direct next-tab/next-workspace moves, a leading-pane whole-tab move, `to-new-tab`, and unchanged new-tab/new-workspace creation all matched the client view, server focus, completed logs, and next input |
+| Herdr 0.9.0 two-client acceptance | Both connected shells switched on the representative cross-tab move; the action and finite focus hooks completed without repetition |
+
+The directional live scenario now covers a right-then-left round trip without increasing the seven
+scenario count. The isolated connected-client fixture was removed after both clients detached and
+the server stopped. The headless suite still cannot observe individual client views. The two-client
+result demonstrates the [documented multi-client limitation](behavior.md#cross-container-focus-recovery).
