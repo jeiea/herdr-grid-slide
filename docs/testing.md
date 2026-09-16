@@ -31,12 +31,14 @@ HERDR_TEST_VERSION='herdr 0.9.0' mise run live-herdr
 ```
 
 The scenarios invoke `move-left`, `move-right`, `move-up`, `move-down`, `to-new-tab`,
-`to-new-workspace`, `tab-to-next-workspace`, and `tab-to-previous-workspace`. They cover a
-horizontal tab-boundary round trip, vertical workspace moves, whole-tab moves, and focused or
-non-focused pane termination through the API or process exit. The non-leading `to-new-workspace`
-case also guards the old pane-ID alias used to refocus a follower after its tab moves. This is a
-headless server smoke test: it verifies that Herdr accepts the requests and preserves final server
-state, but it cannot observe which tab each connected shell client displays.
+`to-new-workspace`, `tab-to-new-workspace`, `tab-to-next-workspace`, and
+`tab-to-previous-workspace`. They cover a horizontal tab-boundary round trip, vertical workspace
+moves, separate fixtures that distinguish a one-pane move from a whole-tab move, and focused or
+non-focused pane termination through the API or process exit. The non-leading `tab-to-new-workspace`
+case also guards the old pane-ID alias used to refocus a follower after its tab moves. The suite
+still has eight isolated scenarios because both new-workspace actions share one scenario. This is
+a headless server smoke test: it verifies that Herdr accepts the requests and preserves final
+server state, but it cannot observe which tab each connected shell client displays.
 
 ## Test the minimum supported Herdr version
 
@@ -59,8 +61,12 @@ key bindings used. With one connected shell client and the smallest practical fi
 
 1. Use the actual left and right directional keys to cross a tab boundary in both directions.
 2. Invoke direct next-tab and next-workspace pane moves.
-3. Move a whole multi-pane tab to a new workspace while its leading pane is focused.
-4. Invoke `to-new-tab`, then use the normal new-tab and new-workspace keys as negative cases.
+3. Invoke `to-new-workspace` in a multi-pane tab. Confirm that only the focused pane moves,
+   the source tab remains, the new workspace appears immediately after the source, and the moved
+   pane receives the next input.
+4. Move a separate whole multi-pane tab to a new workspace while its leading pane is focused.
+   Confirm that all panes and the tab label move together and the focused pane receives the next input.
+5. Invoke `to-new-tab`, then use the normal new-tab and new-workspace keys as negative cases.
 
 For every move, compare the displayed workspace/tab header and pane body with the server snapshot,
 confirm the action and any `pane.focused` hooks finish without repetition, then enter another shell
@@ -155,3 +161,21 @@ segment verifies a finite successful termination hook, the surviving pane and te
 horizontal 50:50 grid, focus on a survivor, and successful input to that focused pane. The harness
 removes inherited `HERDR_*` values and uses short isolated session names; all temporary session and
 download resources were removed afterward.
+
+On 2026-09-16, macOS 26.6.2 arm64:
+
+| Check | Result |
+| --- | --- |
+| Targeted pane/new-workspace integration tests | 7 passed, including no state directory or copied label, no-op and refusal paths, focus and placement partial failures, sibling-tab allowance, and last-workspace placement |
+| Existing whole-tab and manifest regression tests | Leading-pane whole-tab move, custom label retention, and every manifest entrypoint passed |
+| `mise run check` | Stopped before repository checks because mise's ShellCheck 0.9.0 executable was x86_64 and macOS reported `Bad CPU type in executable` |
+| Quality-gate steps other than ShellCheck | Version check, 4 shell test scripts, Rust formatting, Clippy with warnings denied, 3 unit tests, 111 integration tests, and release build passed |
+| `mise run test-herdr-0.8.0` | Official download and fixed SHA256 check passed; `herdr 0.8.0`; all 8 isolated live scenarios passed |
+| `mise run live-herdr` with a fixed Herdr 0.8.2 path | `herdr 0.8.2`; all 8 isolated live scenarios passed |
+| `HERDR_TEST_VERSION='herdr 0.9.0' mise run live-herdr` | Installed `herdr 0.9.0`; all 8 isolated live scenarios passed |
+
+The expanded new-workspace scenario separates one focused pane first, verifies its source tab,
+placement, focus, and next input, then moves an independent three-pane labeled tab and verifies its
+order, label, focus, and next input. ShellCheck remains unverified in this environment; no user tool
+installation or mise setting was changed. The Herdr 0.9.0 connected-client procedure was not run
+in this round.

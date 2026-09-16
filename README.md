@@ -22,9 +22,12 @@ and either `sha256sum` or `shasum`. Release binary installation does not require
 
 ## Behavior
 
-`to-new-workspace` moves the current **whole tab** immediately after its source workspace;
-it does nothing when that tab is the workspace's only tab. Previous/next workspace tab actions
-append an independent tab at the destination, closing the source workspace if it becomes empty.
+`to-new-workspace` moves the focused pane to a new workspace immediately after its source,
+while `tab-to-new-workspace` moves the current **whole tab** there. A pane move does nothing when its
+pane is the only pane in the workspace's only tab; a whole-tab move does nothing when its tab is
+the workspace's only tab. Both actions keep focus on the moved pane. Previous/next workspace tab
+actions append an independent tab at the destination, closing the source workspace if it becomes
+empty.
 
 Successful pane moves across tab or workspace boundaries keep the server focus and connected
 shell view on the moved pane. See [movement and balancing](docs/behavior.md) for compensation
@@ -133,9 +136,15 @@ command = "jeiea.grid-slide.to-new-tab"
 description = "Move pane to new tab"
 
 [[keys.command]]
-key = "ctrl+alt+m"
+key = "alt+shift+m"
 type = "plugin_action"
 command = "jeiea.grid-slide.to-new-workspace"
+description = "Move pane to new workspace"
+
+[[keys.command]]
+key = "ctrl+alt+m"
+type = "plugin_action"
+command = "jeiea.grid-slide.tab-to-new-workspace"
 description = "Move tab to new workspace"
 
 [[keys.command]]

@@ -64,9 +64,15 @@ command = ["./bin/herdr-grid-slide", "to-new-tab"]
 
 [[actions]]
 id = "to-new-workspace"
-title = "Move tab to new workspace"
+title = "Move pane to new workspace"
 contexts = ["pane"]
 command = ["./bin/herdr-grid-slide", "to-new-workspace"]
+
+[[actions]]
+id = "tab-to-new-workspace"
+title = "Move tab to new workspace"
+contexts = ["pane"]
+command = ["./bin/herdr-grid-slide", "tab-to-new-workspace"]
 
 [[actions]]
 id = "move-workspace-next"

@@ -1,10 +1,26 @@
 # Movement and balancing
 
+## Pane move to a new workspace
+
+| Action | Destination | No-op condition |
+| --- | --- | --- |
+| `to-new-workspace` | New workspace immediately after the source | The pane is the only pane in the workspace's only tab |
+
+The action moves only the focused pane and leaves any sibling panes or tabs in the source
+workspace. The destination is a new tab without a copied source-tab label. It explicitly focuses
+the pane ID returned by `pane.move` before repositioning the new workspace. When the source is the
+last workspace, Herdr's default placement is already correct and no repositioning is requested.
+
+The action does not directly balance either the destination or source tab. The destination focus
+hook skips its single pane; the source is balanced by the focus hook when it is entered again.
+If focus or workspace positioning fails after `pane.move`, the pane remains moved and the error
+reports that partial success. No later request is attempted after such a failure.
+
 ## Whole-tab workspace moves
 
 | Action | Destination | No-op condition |
 | --- | --- | --- |
-| `to-new-workspace` | New workspace immediately after the source | Source has only one tab |
+| `tab-to-new-workspace` | New workspace immediately after the source | Source has only one tab |
 | `tab-to-previous-workspace` | Independent tab at the previous workspace's end | Only one workspace exists |
 | `tab-to-next-workspace` | Independent tab at the next workspace's end | Only one workspace exists |
 
@@ -19,7 +35,7 @@ Illustrative whole-tab move (`*` marks the focused terminal, brackets mark tabs)
 
 ```text
 Before: W1 [keep] [A B* C]  | W2 [other]
-Action: to-new-workspace
+Action: tab-to-new-workspace
 After:  W1 [keep] | new W [A B* C] | W2 [other]
 ```
 
@@ -40,6 +56,7 @@ The compensation runs once at the final structural boundary of each logical move
 - Whole-tab workspace moves focus after every following pane has joined the destination. A focused
   leading pane uses the new ID from the leading move response; a focused later pane uses the old ID
   alias that supported Herdr versions resolve to its moved pane.
+- `to-new-workspace` focuses the returned pane ID before repositioning the new workspace.
 - `to-new-tab` focuses the detached pane before positioning its new tab.
 
 If this focus request fails, the structural move remains complete but later balancing or new
@@ -71,6 +88,8 @@ Pane moves between tabs (`to-next-tab`, `to-previous-tab`, and horizontal direct
 that cross a tab boundary) directly request destination balancing. Whole-tab workspace moves
 with multiple panes also directly balance the destination. Vertical directional moves and
 `to-next-workspace` / `to-previous-workspace` rely on the resulting focus hook for automatic balancing.
+`to-new-workspace` directly balances neither side: its one-pane destination is skipped by the
+focus hook, and the source is balanced when focus next returns to it.
 Across vertical workspace boundaries, the preserved horizontal anchor is compared with the selected
 boundary pane's center in the destination layout. A left anchor enters before that pane in reading
 order; an equal or right anchor enters after it, so equality keeps the existing insertion order.

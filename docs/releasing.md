@@ -14,9 +14,10 @@ the tag and GitHub release.
    versions, scenario counts, and results.
 4. In an isolated Herdr 0.9.0 session, run the
    [connected-client cross-container checks](testing.md#verify-herdr-090-connected-client-views).
-   Include actual left/right keys, direct tab/workspace moves, a leading-pane whole-tab move,
-   `to-new-tab`, unchanged tab/workspace creation, and one two-client move. Record client views,
-   server snapshots, completed logs, next-input results, and the expected two-client limitation.
+   Include actual left/right keys, direct tab/workspace moves, one pane separated into a new
+   workspace, a leading-pane whole-tab move in a separate fixture, `to-new-tab`, unchanged
+   tab/workspace creation, and one two-client move. Record client views, server snapshots,
+   completed logs, next-input results, and the expected two-client limitation.
 5. Merge the change to the default branch.
 6. Run the **Release** workflow from the default branch.
 

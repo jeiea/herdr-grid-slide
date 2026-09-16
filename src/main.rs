@@ -50,6 +50,7 @@ enum Command {
     CreateTab,
     CreateWorkspace,
     MoveToNewTab,
+    MoveToNewWorkspace,
     MoveTabWorkspace(Option<MoveDirection>),
     MoveWorkspace(MoveDirection),
     Focus(PaneDirection),
@@ -395,6 +396,7 @@ fn run() -> Result<()> {
         Command::CreateTab => create_tab_to_right(&context, &mut client),
         Command::CreateWorkspace => create_workspace_after_current(&context, &mut client),
         Command::MoveToNewTab => move_pane_to_new_tab(&context, &mut client),
+        Command::MoveToNewWorkspace => move_pane_to_new_workspace(&context, &mut client),
         Command::MoveTabWorkspace(direction) => {
             move_tab_workspace(&context, direction, &mut client)
         }
@@ -413,7 +415,8 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
             "new-workspace" => Ok(Command::CreateWorkspace),
             "split-pane" | "new-pane" => Ok(Command::CreatePane),
             "to-new-tab" => Ok(Command::MoveToNewTab),
-            "to-new-workspace" => Ok(Command::MoveTabWorkspace(None)),
+            "to-new-workspace" => Ok(Command::MoveToNewWorkspace),
+            "tab-to-new-workspace" => Ok(Command::MoveTabWorkspace(None)),
             "on-pane-focused" => Ok(Command::OnPaneFocused),
             "balance" => Ok(Command::Balance),
             _ => Err(usage()),
@@ -464,7 +467,7 @@ fn parse_pane_direction(direction: &str) -> Result<PaneDirection> {
 }
 
 fn usage() -> String {
-    "usage: herdr-grid-slide <workspace|tab> <next|previous> | move-workspace <next|previous> | move-tab-workspace <next|previous> | <focus|move> <direction> | new-tab | new-workspace | to-new-tab | to-new-workspace | split-pane | new-pane | balance | on-pane-focused".into()
+    "usage: herdr-grid-slide <workspace|tab> <next|previous> | move-workspace <next|previous> | move-tab-workspace <next|previous> | <focus|move> <direction> | new-tab | new-workspace | to-new-tab | to-new-workspace | tab-to-new-workspace | split-pane | new-pane | balance | on-pane-focused".into()
 }
 
 fn read_context(needs_state_dir: bool) -> Result<Context> {
@@ -618,6 +621,55 @@ fn move_pane_to_new_tab(context: &Context, client: &mut SocketClient) -> Result<
             format!(
                 "pane moved to a new tab, but positioning {} after {} failed: {error}",
                 created_tab.tab_id, navigation.tab_id
+            )
+        })?;
+    Ok(())
+}
+
+fn move_pane_to_new_workspace(context: &Context, client: &mut SocketClient) -> Result<()> {
+    let snapshot = read_snapshot(client)?;
+    let navigation = navigation_context(context, &snapshot);
+    let source_tab_count = tabs_in_display_order(&snapshot, navigation.workspace_id).len();
+    if source_tab_count <= 1 && find_layout(&snapshot, navigation.tab_id)?.panes.len() <= 1 {
+        return Ok(());
+    }
+    let workspaces = workspaces_in_visible_order(&snapshot);
+    let source = current_position(&workspaces, navigation.workspace_id, |workspace| {
+        workspace.workspace_id.as_str()
+    })?;
+    let moved = request_pane_move(
+        client,
+        navigation.pane_id,
+        json!({"type": "new_workspace"}),
+        true,
+    )?;
+    if !moved.changed {
+        return Ok(());
+    }
+    let moved_pane_id = &moved.pane.pane_id;
+    focus_moved_pane(client, moved_pane_id).map_err(|error| {
+        format!(
+            "pane moved to a new workspace, but focusing moved pane {moved_pane_id} failed: {error}"
+        )
+    })?;
+    if source + 1 == workspaces.len() {
+        return Ok(());
+    }
+    let created_workspace = moved.created_workspace.ok_or(
+        "pane moved to a new workspace, but herdr api pane.move response is missing the created workspace id",
+    )?;
+    client
+        .request(
+            "workspace.move",
+            json!({
+                "workspace_id": created_workspace.workspace_id,
+                "insert_index": source + 1,
+            }),
+        )
+        .map_err(|error| {
+            format!(
+                "pane moved to a new workspace, but positioning {} after {} failed: {error}",
+                created_workspace.workspace_id, navigation.workspace_id
             )
         })?;
     Ok(())

@@ -333,13 +333,19 @@ fn pane_termination_automatically_balances_the_surviving_tab() {
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
-fn to_new_workspace_carries_the_whole_tab_after_its_source_and_keeps_focus() {
+fn new_workspace_actions_move_one_pane_or_the_whole_tab_and_keep_focus() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
-    let source = live
+    let pane_source = live
+        .create_workspace("workspace-pane-source")
+        .expect("create pane source workspace");
+    let detached = live
+        .split_pane(&pane_source.root_pane_id, "right", true)
+        .expect("create pane to detach");
+    let tab_source = live
         .create_workspace("workspace-tab-source")
-        .expect("create source workspace");
+        .expect("create tab source workspace");
     let moving = live
-        .create_tab(&source.workspace_id, "moving")
+        .create_tab(&tab_source.workspace_id, "moving")
         .expect("create moving tab beside the workspace's first tab");
     let middle = live
         .split_pane(&moving.root_pane_id, "right", true)
@@ -350,19 +356,61 @@ fn to_new_workspace_carries_the_whole_tab_after_its_source_and_keeps_focus() {
     let trailing = live
         .create_workspace("workspace-trailing")
         .expect("create trailing workspace");
-    live.focus_workspace(&source.workspace_id)
-        .expect("focus source workspace");
-    live.focus_tab(&moving.tab_id).expect("focus moving tab");
     live.link_plugin().expect("link copied plugin");
 
+    live.focus_workspace(&pane_source.workspace_id)
+        .expect("focus pane source workspace");
+    live.focus_tab(&pane_source.tab_id)
+        .expect("focus pane source tab");
+    let pane_before = live.snapshot().expect("capture pane pre-action snapshot");
+    let detached_terminal_id = terminal_id(&pane_before, &detached);
+    assert_eq!(focused_pane_id(&pane_before), detached);
+
+    live.invoke_action("to-new-workspace")
+        .expect("invoke to-new-workspace and wait for its log");
+
+    let pane_after = live.snapshot().expect("capture pane post-action snapshot");
+    let detached_pane = pane_by_terminal_id(&pane_after, &detached_terminal_id);
+    let detached_pane_id = detached_pane["pane_id"].as_str().expect("detached pane ID");
+    let pane_workspace_id = detached_pane["workspace_id"]
+        .as_str()
+        .expect("pane workspace ID");
+    assert_ne!(pane_workspace_id, pane_source.workspace_id);
+    assert_eq!(focused_pane_id(&pane_after), detached_pane_id);
+    assert_eq!(
+        pane_ids_in_tab(&pane_after, &pane_source.tab_id),
+        BTreeSet::from([pane_source.root_pane_id.clone()])
+    );
+    assert_eq!(
+        pane_ids_in_tab(&pane_after, detached_pane["tab_id"].as_str().unwrap()).len(),
+        1
+    );
+    assert!(
+        workspace_number(&pane_after, &pane_source.workspace_id)
+            < workspace_number(&pane_after, pane_workspace_id)
+    );
+    assert!(
+        workspace_number(&pane_after, pane_workspace_id)
+            < workspace_number(&pane_after, &tab_source.workspace_id)
+    );
+    live.run_and_wait_for_text(detached_pane_id, "to-new-workspace")
+        .expect("send input to detached pane");
+
+    live.focus_workspace(&tab_source.workspace_id)
+        .expect("focus tab source workspace");
+    live.focus_tab(&moving.tab_id).expect("focus moving tab");
+    live.focus_right_of(&moving.root_pane_id)
+        .expect("focus middle moving pane");
+    live.focus_right_of(&middle)
+        .expect("focus right moving pane");
     let before = live.snapshot().expect("capture pre-action snapshot");
     let left_terminal_id = terminal_id(&before, &moving.root_pane_id);
     let middle_terminal_id = terminal_id(&before, &middle);
     let right_terminal_id = terminal_id(&before, &focused);
     assert_eq!(focused_pane_id(&before), focused);
 
-    live.invoke_action("to-new-workspace")
-        .expect("invoke to-new-workspace and wait for its log");
+    live.invoke_action("tab-to-new-workspace")
+        .expect("invoke tab-to-new-workspace and wait for its log");
 
     let after = live.snapshot().expect("capture post-action snapshot");
     let left = pane_by_terminal_id(&after, &left_terminal_id);
@@ -373,7 +421,7 @@ fn to_new_workspace_carries_the_whole_tab_after_its_source_and_keeps_focus() {
     let moved_ids: Vec<&str> = [left, middle, right]
         .map(|pane| pane["pane_id"].as_str().expect("moved pane ID"))
         .to_vec();
-    assert_ne!(created_workspace_id, source.workspace_id);
+    assert_ne!(created_workspace_id, tab_source.workspace_id);
     for pane in [middle, right] {
         assert_eq!(pane["workspace_id"], created_workspace_id);
         assert_eq!(pane["tab_id"], created_tab_id);
@@ -383,12 +431,12 @@ fn to_new_workspace_carries_the_whole_tab_after_its_source_and_keeps_focus() {
     assert_eq!(pane_ids_in_tab(&after, created_tab_id).len(), 3);
     assert!(pane_ids_in_tab(&after, &moving.tab_id).is_empty());
     assert_eq!(
-        pane_ids_in_tab(&after, &source.tab_id),
-        BTreeSet::from([source.root_pane_id.clone()])
+        pane_ids_in_tab(&after, &tab_source.tab_id),
+        BTreeSet::from([tab_source.root_pane_id.clone()])
     );
     assert_eq!(tab(&after, created_tab_id)["label"], "moving");
     assert!(
-        workspace_number(&after, &source.workspace_id)
+        workspace_number(&after, &tab_source.workspace_id)
             < workspace_number(&after, created_workspace_id)
     );
     assert!(
@@ -396,6 +444,8 @@ fn to_new_workspace_carries_the_whole_tab_after_its_source_and_keeps_focus() {
             < workspace_number(&after, &trailing.workspace_id)
     );
     assert_eq!(panes_in_reading_order(&after, created_tab_id), moved_ids);
+    live.run_and_wait_for_text(moved_ids[2], "tab-to-new-workspace")
+        .expect("send input to focused whole-tab pane");
 }
 
 #[test]
@@ -879,6 +929,11 @@ impl LiveHerdr {
 
     fn focus_tab(&self, tab_id: &str) -> Result<(), String> {
         self.run_json(["tab", "focus", tab_id]).map(|_| ())
+    }
+
+    fn focus_right_of(&self, pane_id: &str) -> Result<(), String> {
+        self.run_json(["pane", "focus", "--direction", "right", "--pane", pane_id])
+            .map(|_| ())
     }
 
     fn focus_workspace(&self, workspace_id: &str) -> Result<(), String> {
