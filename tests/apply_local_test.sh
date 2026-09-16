@@ -34,6 +34,7 @@ EOF
 
 cat >"$FAKE_BIN/herdr" <<'EOF'
 #!/bin/sh
+set -eu
 test "$(cat bin/herdr-grid-slide)" = "$BINARY_CONTENT"
 printf '%s|%s\n' "$PWD" "$*" >>"$HERDR_CALLS"
 EOF
@@ -66,7 +67,7 @@ assert_no_staged_binary() {
   done
 }
 
-assert_failed_without_replacing_or_linking() {
+assert_failed_without_replacing_or_calling_herdr() {
   failure=$1
   prepare_project "failure-$failure"
   mkdir -p "$PROJECT/bin"
@@ -93,11 +94,14 @@ run_apply_local second
 test "$(cat "$PROJECT/bin/herdr-grid-slide")" = second
 test "$(cat "$PROJECT/target/release/herdr-grid-slide")" = second
 test "$(awk 'END { print NR }' "$CARGO_CALLS")" = 2
-test "$(awk 'END { print NR }' "$HERDR_CALLS")" = 2
 test "$(sort -u "$CARGO_CALLS")" = "build --locked --release"
-test "$(sort -u "$HERDR_CALLS")" = "$PROJECT|plugin link ."
+test "$(cat "$HERDR_CALLS")" = "$(printf '%s\n' \
+  "$PROJECT|plugin link ." \
+  "$PROJECT|server reload-config" \
+  "$PROJECT|plugin link ." \
+  "$PROJECT|server reload-config")"
 assert_no_staged_binary
 
-assert_failed_without_replacing_or_linking build
-assert_failed_without_replacing_or_linking copy
-assert_failed_without_replacing_or_linking move
+assert_failed_without_replacing_or_calling_herdr build
+assert_failed_without_replacing_or_calling_herdr copy
+assert_failed_without_replacing_or_calling_herdr move

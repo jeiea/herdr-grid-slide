@@ -15,3 +15,4 @@ cp "$SOURCE" "$STAGED"
 chmod +x "$STAGED"
 mv -f "$STAGED" "$DESTINATION"
 herdr plugin link .
+herdr server reload-config
