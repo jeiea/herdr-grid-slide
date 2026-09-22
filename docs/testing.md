@@ -123,11 +123,14 @@ On 2026-09-22, macOS arm64, for the Windows support change:
 | Windows x64 `cargo check --locked --all-targets` and Clippy with warnings denied | Passed with `--target x86_64-pc-windows-msvc`, including compilation of the two Windows-only integration tests |
 | Actionlint and native no-argument release smoke | Passed; the native binary exited with code 1 and printed `usage:` |
 | Version-input regression | Changing the PowerShell installer after a release tag required a version bump |
-| macOS PowerShell 7.5.6 installer check, reported by the coordinator | A copy of the final `build-plugin.ps1`, with `curl.exe` mapped to `/usr/bin/curl` and a local `file://` release, exited with code 0 for both initial installation and reinstallation; this does not verify Windows PowerShell 5.1 |
-| Windows runtime, PowerShell 5.1 installer, remote CI and release | Not run: no Windows environment or access to the remote repository was available |
+| macOS PowerShell 7.5.6 installer check | A copy of `build-plugin.ps1`, with `curl.exe` mapped to `/usr/bin/curl` and a local `file://` release, passed initial installation, replacement, and corrupt-update rejection |
+| [Windows x64 CI](https://github.com/jeiea/herdr-grid-slide/actions/runs/35701832768) on `windows-2025` | 3 unit tests and all 113 integration tests passed, including busy named-pipe connections and Windows PowerShell 5.1 installation, replacement, registered action execution, and failed-update preservation |
+| macOS and Linux jobs in the same CI run | Both passed |
+| Published release and actual Windows Herdr session | Not exercised |
 
-The Windows integration suite has 113 cases (111 shared plus 2 Windows-only cases). Cross-target
-compilation is not evidence that those cases pass on Windows. No release was published.
+The Windows suite executed 111 shared cases and 2 Windows-only cases against the OS transport
+fixture. This verifies the plugin's Windows execution and installation paths, while actual Herdr
+session behavior remains a separate follow-up. No release was published.
 
 On 2026-09-09, macOS 26.6.2 arm64:
 
