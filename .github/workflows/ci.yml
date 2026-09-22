@@ -48,3 +48,19 @@ jobs:
         run: sh tests/install_test.sh
       - name: Run integration tests
         run: cargo test --locked --test integration_test
+
+  windows:
+    name: Windows x64 integration
+    runs-on: windows-2025
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust 1.97.1
+        run: |
+          rustup toolchain install 1.97.1 --profile minimal --component clippy
+          rustup default 1.97.1
+      - name: Check Windows code
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Run Rust and PowerShell installer tests
+        run: cargo test --locked

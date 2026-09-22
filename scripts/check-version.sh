@@ -67,7 +67,7 @@ if [ "$mode" = "--release" ]; then
     fi
   fi
 elif git rev-parse --git-dir >/dev/null 2>&1 && git show-ref --verify --quiet "refs/tags/$tag"; then
-  if ! git diff --quiet "$tag" -- Cargo.toml Cargo.lock herdr-plugin.toml src scripts/build-plugin.sh .github/workflows/release.yml; then
+  if ! git diff --quiet "$tag" -- Cargo.toml Cargo.lock herdr-plugin.toml src scripts/build-plugin.sh scripts/build-plugin.ps1 .github/workflows/release.yml; then
     echo "release inputs changed since $tag; bump herdr-plugin.toml version" >&2
     exit 1
   fi

@@ -1,9 +1,8 @@
-#![cfg(unix)]
-
 use std::collections::{HashMap, VecDeque};
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, ErrorKind, Write};
-use std::os::unix::net::{UnixListener, UnixStream};
+#[cfg(unix)]
+use std::os::unix::net::{UnixListener, UnixStream as LocalStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command as ProcessCommand, Output};
 use std::sync::Arc;
@@ -11,12 +10,25 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+#[cfg(windows)]
+use interprocess::{
+    TryClone,
+    local_socket::{
+        GenericNamespaced, ListenerNonblockingMode, ListenerOptions, Stream as LocalStream,
+        prelude::*,
+    },
+};
 use serde_json::{Value, json};
 
 /// One scripted socket reply. `Err` is serialized as herdr's `error.message`.
 type Reply = Result<Value, String>;
 
 static TEMP_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(windows)]
+#[path = "support/windows.rs"]
+mod windows;
+
 #[test]
 fn moving_a_focused_leader_tab_in_visible_workspace_order_focuses_its_new_destination_id() {
     for (direction, number, target) in [
@@ -4017,7 +4029,8 @@ fn manifest_exposes_the_create_tab_to_the_right_action() {
 #[test]
 fn manifest_exposes_the_create_workspace_after_current_action() {
     let manifest = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/herdr-plugin.toml"))
-        .expect("the manifest sits next to Cargo.toml");
+        .expect("the manifest sits next to Cargo.toml")
+        .replace("\r\n", "\n");
 
     assert!(manifest.contains(
         r#"[[actions]]
@@ -4031,7 +4044,8 @@ command = ["./bin/herdr-grid-slide", "new-workspace"]"#
 #[test]
 fn manifest_exposes_all_directional_pane_move_actions() {
     let manifest = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/herdr-plugin.toml"))
-        .expect("the manifest sits next to Cargo.toml");
+        .expect("the manifest sits next to Cargo.toml")
+        .replace("\r\n", "\n");
 
     for direction in ["left", "down", "up", "right"] {
         assert!(
@@ -4091,6 +4105,7 @@ fn every_manifest_entrypoint_is_a_command_the_plugin_accepts() {
 /// request, one JSON line in and one out -- and records every request in order.
 struct FakeHerdr {
     directory: PathBuf,
+    program: PathBuf,
     /// Requests that arrived while a held balance lock was still in place.
     premature_requests: Arc<AtomicUsize>,
     lock_released: Arc<AtomicBool>,
@@ -4131,6 +4146,7 @@ impl FakeHerdr {
         let directory = temp_dir();
         fs::create_dir_all(&directory).unwrap();
         Self {
+            program: PathBuf::from(env!("CARGO_BIN_EXE_herdr-grid-slide")),
             lock_released: Arc::new(AtomicBool::new(true)),
             premature_requests: Arc::new(AtomicUsize::new(0)),
             replies: HashMap::new(),
@@ -4191,7 +4207,7 @@ impl FakeHerdr {
         let socket_path = self.directory.join("herdr.sock");
         let stop = Arc::new(AtomicBool::new(false));
         let server = self.serve(&socket_path, Arc::clone(&stop));
-        let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-grid-slide"));
+        let mut command = ProcessCommand::new(&self.program);
         command
             .args(args)
             .env("HERDR_PANE_ID", pane_id)
@@ -4215,9 +4231,24 @@ impl FakeHerdr {
 
     /// Serves requests until `stop` is set, then hands back everything it saw.
     fn serve(&self, socket_path: &Path, stop: Arc<AtomicBool>) -> thread::JoinHandle<Vec<Call>> {
-        let _ = fs::remove_file(socket_path);
-        let listener = UnixListener::bind(socket_path).unwrap();
-        listener.set_nonblocking(true).unwrap();
+        #[cfg(unix)]
+        let listener = {
+            let _ = fs::remove_file(socket_path);
+            let listener = UnixListener::bind(socket_path).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            listener
+        };
+        #[cfg(windows)]
+        let listener = ListenerOptions::new()
+            .name(
+                socket_path
+                    .to_string_lossy()
+                    .to_ns_name::<GenericNamespaced>()
+                    .unwrap(),
+            )
+            .nonblocking(ListenerNonblockingMode::Accept)
+            .create_sync()
+            .unwrap();
         let mut replies = self.replies.clone();
         let snapshot = self.snapshot.clone();
         let lock_released = Arc::clone(&self.lock_released);
@@ -4225,8 +4256,12 @@ impl FakeHerdr {
         thread::spawn(move || {
             let mut requests = Vec::new();
             loop {
-                match listener.accept() {
-                    Ok((connection, _)) => {
+                #[cfg(unix)]
+                let accepted = listener.accept().map(|(connection, _)| connection);
+                #[cfg(windows)]
+                let accepted = listener.accept();
+                match accepted {
+                    Ok(connection) => {
                         if !lock_released.load(Ordering::SeqCst) {
                             premature_requests.fetch_add(1, Ordering::SeqCst);
                         }
@@ -4333,7 +4368,7 @@ impl Run {
 }
 
 fn serve_request(
-    connection: UnixStream,
+    connection: LocalStream,
     replies: &mut HashMap<String, VecDeque<Reply>>,
     snapshot: &Value,
 ) -> Call {

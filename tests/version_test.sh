@@ -50,6 +50,7 @@ cp "$ROOT/Cargo.toml" "$TAGGED/Cargo.toml"
 cp "$ROOT/Cargo.lock" "$TAGGED/Cargo.lock"
 cp "$ROOT/herdr-plugin.toml" "$TAGGED/herdr-plugin.toml"
 cp "$ROOT/scripts/build-plugin.sh" "$TAGGED/scripts/build-plugin.sh"
+cp "$ROOT/scripts/build-plugin.ps1" "$TAGGED/scripts/build-plugin.ps1"
 cp "$ROOT/scripts/check-version.sh" "$TAGGED/scripts/check-version.sh"
 cp "$ROOT/src/main.rs" "$TAGGED/src/main.rs"
 (
@@ -68,6 +69,12 @@ cp "$ROOT/src/main.rs" "$TAGGED/src/main.rs"
   printf '\n// release input changed\n' >>src/main.rs
   if ./scripts/check-version.sh; then
     echo "changed release inputs unexpectedly reused a version" >&2
+    exit 1
+  fi
+  git restore src/main.rs
+  printf '\n# release input changed\n' >>scripts/build-plugin.ps1
+  if ./scripts/check-version.sh; then
+    echo "changed Windows installer unexpectedly reused a version" >&2
     exit 1
   fi
 )

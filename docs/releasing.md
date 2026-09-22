@@ -2,13 +2,24 @@
 
 The release workflow is intentionally manual. It reads the version from `herdr-plugin.toml`, requires
 the same version in `Cargo.toml`, and refuses to reuse an existing `v<version>` tag. A successful run
-builds four native binaries, generates `SHA256SUMS`, records GitHub build provenance, and creates both
+builds five native binaries, generates `SHA256SUMS`, records GitHub build provenance, and creates both
 the tag and GitHub release.
+
+| Platform | Targets | Asset suffix |
+| --- | --- | --- |
+| macOS | `aarch64-apple-darwin`, `x86_64-apple-darwin` | Target name |
+| Linux | `aarch64-unknown-linux-musl`, `x86_64-unknown-linux-musl` | Target name |
+| Windows x64 | `x86_64-pc-windows-msvc` | `x86_64-pc-windows-msvc.exe` |
+
+Binary names follow `herdr-grid-slide-v<version>-<asset suffix>`. Each native build must exit
+with code 1 and print `usage:` when run without arguments. The Windows build also runs the shared
+integration suite, busy-pipe scenario, and PowerShell installer test before staging its asset.
 
 ## Prepare a version
 
 1. Run `mise run bump -- <version>`, for example `mise run bump -- 0.1.1`.
 2. Run the [local quality gate](../README.md#checks).
+   Confirm **Windows x64 integration** passes, including the PowerShell installer and named-pipe tests.
 3. Run the [minimum-version live check](testing.md#test-the-minimum-supported-herdr-version)
    with Herdr 0.8.0, the 0.8.2 regression check, and the 0.9.0 live check. Record the platform,
    versions, scenario counts, and results.
@@ -27,7 +38,7 @@ If a replacement fails, it restores the originals from backups.
 
 The workflow will not publish from a private repository or a non-default branch. Do not create the
 tag manually; the workflow creates the exact workflow commit's tag and a draft release after all
-build and integrity checks pass. The release remains a draft until all five assets have been uploaded
+build and integrity checks pass. The release remains a draft until all six assets have been uploaded
 and their names verified.
 
 Asset verification uses `gh release view` to include draft releases before publication.
@@ -53,10 +64,18 @@ gh release delete v0.1.0 --cleanup-tag
 After making the repository public:
 
 - [ ] Add repository topics such as `herdr`, `plugin`, `pane`, and `navigation`.
-- [ ] Add a ruleset for the default branch requiring **Linux quality gate** and **macOS integration**.
+- [ ] Add a ruleset for the default branch requiring **Linux quality gate**, **macOS integration**,
+  and **Windows x64 integration**.
 - [ ] Require pull requests and block force pushes or deletion of the default branch.
-- [ ] Run the **Release** workflow once and confirm it creates `v0.1.0` and all five assets.
-- [ ] Confirm the release has build-provenance attestations for all four binaries.
+- [ ] Run the **Release** workflow once and confirm it creates `v0.1.0` and all six assets.
+- [ ] Confirm the release has build-provenance attestations for all five binaries.
 - [ ] On a machine without Rust, run `herdr plugin install jeiea/herdr-grid-slide` with Herdr 0.8.0 or
   later and invoke at least one action.
 - [ ] Reinstall with `--ref v0.1.0` and confirm the pinned-version path works.
+
+## Optional follow-up verification
+
+This is separate from the required Windows CI checks for the current change.
+
+- [ ] On Windows x64, confirm installation places `bin/herdr-grid-slide.exe` and registered actions
+  and automatic balancing work in Herdr 0.8.0 or later.

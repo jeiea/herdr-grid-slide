@@ -7,6 +7,11 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(windows)]
+use interprocess::{
+    TryClone,
+    local_socket::{GenericNamespaced, Stream, prelude::*},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -1834,8 +1839,17 @@ impl SocketClient {
     fn request(&mut self, method: &str, params: Value) -> Result<Value> {
         let id = format!("jeiea.grid-slide:{}-{}", std::process::id(), self.next_id);
         self.next_id += 1;
+        #[cfg(unix)]
         let mut writer =
             UnixStream::connect(&self.socket_path).map_err(|error| error.to_string())?;
+        #[cfg(windows)]
+        let mut writer = Stream::connect(
+            self.socket_path
+                .as_str()
+                .to_ns_name::<GenericNamespaced>()
+                .map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| error.to_string())?;
         let mut reader = BufReader::new(writer.try_clone().map_err(|error| error.to_string())?);
         writeln!(
             writer,

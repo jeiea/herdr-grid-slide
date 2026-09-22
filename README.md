@@ -4,7 +4,8 @@ A plugin born from the idea of focusing and moving panes with hjkl.
 
 ## Support
 
-Minimum Herdr version: **0.8.0**. Release targets: macOS and Linux, each on arm64 and x86_64.
+Minimum Herdr version: **0.8.0**. Release targets: macOS and Linux, each on arm64 and x86_64,
+and Windows x64.
 The eight live scenarios passed on macOS arm64 with Herdr 0.8.0, 0.8.2, and 0.9.0; other
 platforms and versions have not been exercised in that run. See
 [verification details](docs/testing.md#recorded-results).
@@ -17,8 +18,15 @@ Installation requires a published release.
 herdr plugin install jeiea/herdr-grid-slide
 ```
 
-Requires Herdr, git, and the installer tools: `sh`, `curl`, `awk`, basic Unix utilities,
-and either `sha256sum` or `shasum`. Release binary installation does not require Rust.
+Requires Herdr, git, and the installer tools for your platform. Release binary installation
+does not require Rust.
+
+| Platform | Installer tools |
+| --- | --- |
+| macOS / Linux | `sh`, `curl`, `awk`, basic Unix utilities, and `sha256sum` or `shasum` |
+| Windows x64 | Windows PowerShell 5.1 (`powershell.exe`), `curl.exe`, and `Get-FileHash` |
+
+The installer verifies the release checksum before replacing the installed binary.
 
 ## Behavior
 
@@ -40,7 +48,9 @@ and proportions; a temporary tab may appear.
 ## Checks
 
 With mise and the configured Rust and ShellCheck installed, run `mise run check` for the local
-quality gate. On macOS arm64, `mise run test-herdr-0.8.0` downloads and tests the minimum version.
+quality gate on macOS or Linux. Windows CI runs the Rust tests and PowerShell installer tests;
+see [Windows checks](docs/testing.md#check-windows-support). On macOS arm64,
+`mise run test-herdr-0.8.0` downloads and tests the minimum version.
 With Herdr 0.8.2 on PATH, `mise run live-herdr` runs eight isolated session scenarios. Set
 `HERDR_TEST_VERSION='herdr 0.9.0'` to check an installed Herdr 0.9.0 instead.
 See [verification prerequisites](docs/testing.md#test-the-minimum-supported-herdr-version)

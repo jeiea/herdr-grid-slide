@@ -2,7 +2,7 @@
 
 ## Run the local quality gate
 
-From a repository checkout, install the configured tools with mise and run:
+From a repository checkout on macOS or Linux, install the configured tools with mise and run:
 
 ```sh
 mise install
@@ -11,6 +11,37 @@ mise run check
 
 Checks versions, shell scripts and their tests, Rust formatting and Clippy, unit and
 socket-fixture integration tests, and a release build. Live Herdr scenarios run separately.
+
+## Check Windows support
+
+On Windows x64, with Rust 1.97.1, Windows PowerShell 5.1 and `curl.exe`, run:
+
+```powershell
+cargo clippy --locked --all-targets -- -D warnings
+cargo test --locked
+```
+
+The `Windows x64 integration` CI job runs these commands on `windows-2025`. All 111 shared
+integration tests use real named pipes on Windows and Unix sockets on macOS/Linux. Two additional
+Windows integration tests cover waiting for a busy Herdr connection and installing a release.
+The latter invokes the manifest's PowerShell build command against a local release containing
+the compiled `.exe`, then runs a registered action using Herdr's absolute path resolution with
+the extension omitted. It also checks replacement, corrupt downloads, duplicate/invalid/missing
+checksums, unsupported architecture, curl failure propagation, preservation of the installed
+binary, and temporary-file cleanup. These tests use a fake Herdr server at the OS transport boundary.
+
+From a non-Windows checkout, check the Windows Rust code without running it:
+
+```sh
+rustup target add x86_64-pc-windows-msvc
+cargo check --locked --target x86_64-pc-windows-msvc --all-targets
+cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnings
+```
+
+Cross-checking does not execute named pipes, Windows file locks, PowerShell, or `.exe` resolution.
+The live Herdr scenarios and `apply-local` task still require a Unix environment. Confirm actual
+Windows CI results to complete the current verification. Checking registered actions and automatic
+balancing in Windows Herdr is separate, optional follow-up verification.
 
 ## Run the live scenarios
 
@@ -83,6 +114,20 @@ See [cross-container focus recovery](behavior.md#cross-container-focus-recovery)
 rationale, multi-client constraint, and removal gates.
 
 ## Recorded results
+
+On 2026-09-22, macOS arm64, for the Windows support change:
+
+| Check | Result |
+| --- | --- |
+| `mise run check` | 4 shell test scripts, 3 Rust unit tests, 111 integration tests, formatting, Clippy and release build passed; 8 live scenarios remained ignored |
+| Windows x64 `cargo check --locked --all-targets` and Clippy with warnings denied | Passed with `--target x86_64-pc-windows-msvc`, including compilation of the two Windows-only integration tests |
+| Actionlint and native no-argument release smoke | Passed; the native binary exited with code 1 and printed `usage:` |
+| Version-input regression | Changing the PowerShell installer after a release tag required a version bump |
+| macOS PowerShell 7.5.6 installer check, reported by the coordinator | A copy of the final `build-plugin.ps1`, with `curl.exe` mapped to `/usr/bin/curl` and a local `file://` release, exited with code 0 for both initial installation and reinstallation; this does not verify Windows PowerShell 5.1 |
+| Windows runtime, PowerShell 5.1 installer, remote CI and release | Not run: no Windows environment or access to the remote repository was available |
+
+The Windows integration suite has 113 cases (111 shared plus 2 Windows-only cases). Cross-target
+compilation is not evidence that those cases pass on Windows. No release was published.
 
 On 2026-09-09, macOS 26.6.2 arm64:
 
