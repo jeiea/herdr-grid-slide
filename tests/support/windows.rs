@@ -96,6 +96,7 @@ fn installing_a_windows_release_runs_registered_actions_and_failed_updates_prese
             "(Get-FileHash -LiteralPath $env:TEST_ASSET -Algorithm SHA256).Hash",
         ])
         .env("TEST_ASSET", release.join(&asset))
+        .env_remove("PSModulePath")
         .output()
         .unwrap();
     assert!(
@@ -127,6 +128,7 @@ fn installing_a_windows_release_runs_registered_actions_and_failed_updates_prese
             .unwrap(),
     )
     .unwrap();
+    // Preserve inherited module paths so installation also covers launches through Herdr from pwsh.
     let install = |architecture: &str| {
         ProcessCommand::new(&argv[0])
             .args(&argv[1..])

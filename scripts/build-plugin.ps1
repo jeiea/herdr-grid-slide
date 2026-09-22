@@ -1,4 +1,7 @@
 $ErrorActionPreference = 'Stop'
+# Herdr can inherit PowerShell 7 module paths; use this process's built-in modules.
+# https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_psmodulepath#starting-windows-powershell-from-powershell-7
+$env:PSModulePath = "$PSHOME/Modules"
 $root = Split-Path $PSScriptRoot -Parent
 $temporary = $null
 $exitCode = 1
