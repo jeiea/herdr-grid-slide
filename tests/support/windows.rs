@@ -98,7 +98,13 @@ fn installing_a_windows_release_runs_registered_actions_and_failed_updates_prese
         .env("TEST_ASSET", release.join(&asset))
         .output()
         .unwrap();
-    assert!(hash_output.status.success());
+    assert!(
+        hash_output.status.success(),
+        "PowerShell Get-FileHash failed: status={}\nstdout: {}\nstderr: {}",
+        hash_output.status,
+        String::from_utf8_lossy(&hash_output.stdout),
+        String::from_utf8_lossy(&hash_output.stderr)
+    );
     let hash = String::from_utf8(hash_output.stdout)
         .unwrap()
         .trim()
