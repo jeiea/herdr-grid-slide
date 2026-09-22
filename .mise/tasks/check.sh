@@ -5,8 +5,8 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)
 cd "$ROOT"
 
 shellcheck_version=$(shellcheck --version | awk '$1 == "version:" { print $2 }')
-if [ "$shellcheck_version" != 0.9.0 ]; then
-  echo "ShellCheck 0.9.0 is required, found ${shellcheck_version:-unknown}" >&2
+if [ "$shellcheck_version" != 0.11.0 ]; then
+  echo "ShellCheck 0.11.0 is required, found ${shellcheck_version:-unknown}" >&2
   exit 1
 fi
 
