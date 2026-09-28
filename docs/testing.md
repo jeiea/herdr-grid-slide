@@ -30,6 +30,12 @@ the extension omitted. It also checks replacement, corrupt downloads, duplicate/
 checksums, unsupported architecture, curl failure propagation, preservation of the installed
 binary, and temporary-file cleanup. These tests use a fake Herdr server at the OS transport boundary.
 
+A third Windows-only test exercises local application from a path containing spaces: first install,
+replacement, failed build or copy, Windows file locks, link/reload failure propagation, and temporary
+file cleanup. It substitutes the external Cargo and Herdr commands while running the real PowerShell
+task and Windows file operations. `mise apply-local` selects the PowerShell sibling of the Unix task
+using mise's [platform-specific file tasks](https://mise.jdx.dev/tasks/file-tasks.html#writing-one-task-for-both-platforms).
+
 From a non-Windows checkout, check the Windows Rust code without running it:
 
 ```sh
@@ -39,9 +45,17 @@ cargo clippy --locked --target x86_64-pc-windows-msvc --all-targets -- -D warnin
 ```
 
 Cross-checking does not execute named pipes, Windows file locks, PowerShell, or `.exe` resolution.
-The live Herdr scenarios and `apply-local` task still require a Unix environment. Confirm actual
-Windows CI results to complete the current verification. Checking registered actions and automatic
-balancing in Windows Herdr is separate, optional follow-up verification.
+Use `mise apply-local` to build, link, and reload the checkout into the current Windows Herdr server.
+To run the eight scenarios in isolated named sessions against an installed Windows Herdr:
+
+```powershell
+$env:HERDR_TEST_VERSION = 'herdr 0.9.0-preview.2026-09-08-62431dbd033b'
+mise exec -- cargo test --locked --test live_herdr_test -- --ignored --test-threads=1
+```
+
+Set the expected version to the exact version being tested. The harness uses the Windows temporary
+directory and an `.exe` plugin, checks registered actions and automatic balancing, then removes its
+sessions. It does not inspect connected client screens or keyboard shortcuts.
 
 ## Run the live scenarios
 
@@ -114,6 +128,21 @@ See [cross-container focus recovery](behavior.md#cross-container-focus-recovery)
 rationale, multi-client constraint, and removal gates.
 
 ## Recorded results
+
+On 2026-09-29, Windows x64, with mise 2026.9.16, Rust 1.97.1, Windows PowerShell 5.1,
+and Herdr 0.9.0-preview.2026-09-08-62431dbd033b:
+
+| Check | Result |
+| --- | --- |
+| `mise apply-local`, initial application and repeat | Release build, `.exe` installation/replacement, local plugin link, and config reload passed; reload diagnostics empty; installed and release SHA256 matched |
+| `cargo test --locked` | 3 unit tests and all 114 integration tests passed, including the new local-application failure cases |
+| Live Herdr scenarios | All 8 passed in isolated named sessions, using the Windows `.exe` entrypoint |
+| Rust formatting, Clippy with warnings denied, and ShellCheck | Passed |
+| Unix apply-local shell test under Git Bash | Stopped at the Unix executable-bit assertion; Windows application is covered by the PowerShell test above |
+
+The local plugin remains linked and enabled in the running server. Live scenarios cover server state,
+registered actions, and automatic balancing; connected-client rendering and actual shortcut presses
+were not exercised. No release was published.
 
 On 2026-09-22, macOS arm64, for the Windows support change:
 

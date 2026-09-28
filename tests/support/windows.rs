@@ -1,6 +1,109 @@
 use super::*;
+use std::os::windows::fs::OpenOptionsExt;
 use std::process::Stdio;
 use std::time::Instant;
+
+#[test]
+fn applying_local_windows_builds_replaces_and_reloads_only_after_success() {
+    let herdr = FakeHerdr::new(tab_snapshot(vec![]));
+    let project = herdr.directory.join("local plugin with spaces");
+    fs::create_dir_all(project.join(".mise/tasks")).unwrap();
+    fs::create_dir_all(project.join("tools")).unwrap();
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(".mise/tasks/apply-local.ps1"),
+        project.join(".mise/tasks/apply-local.ps1"),
+    )
+    .unwrap();
+    fs::write(
+        project.join("tools/cargo.cmd"),
+        "@echo off\r\nif not \"%*\"==\"build --locked --release\" exit /b 90\r\nif \"%FAIL_AT%\"==\"build\" exit /b 42\r\nif not exist target\\release mkdir target\\release\r\nif \"%FAIL_AT%\"==\"copy\" exit /b 0\r\ncopy /y \"%TEST_BINARY%\" target\\release\\herdr-grid-slide.exe >nul\r\n",
+    )
+    .unwrap();
+    fs::write(
+        project.join("tools/herdr.cmd"),
+        "@echo off\r\nif not exist bin\\herdr-grid-slide.exe exit /b 91\r\necho %*>>calls\r\nif \"%FAIL_AT%\"==\"%*\" exit /b 43\r\n",
+    )
+    .unwrap();
+    let run = |failure: &str| {
+        ProcessCommand::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+            ])
+            .arg(project.join(".mise/tasks/apply-local.ps1"))
+            .current_dir(&herdr.directory)
+            .env(
+                "PATH",
+                format!(
+                    "{};{}",
+                    project.join("tools").display(),
+                    std::env::var("PATH").unwrap()
+                ),
+            )
+            .env("TEST_BINARY", &herdr.program)
+            .env("FAIL_AT", failure)
+            .output()
+            .unwrap()
+    };
+    let installed = project.join("bin/herdr-grid-slide.exe");
+    for _ in 0..2 {
+        let output = run("");
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(
+            fs::read(&installed).unwrap(),
+            fs::read(&herdr.program).unwrap()
+        );
+        fs::write(&installed, b"previous local build").unwrap();
+    }
+    assert_eq!(
+        fs::read_to_string(project.join("calls"))
+            .unwrap()
+            .replace('\r', ""),
+        "plugin link .\nserver reload-config\nplugin link .\nserver reload-config\n"
+    );
+    fs::remove_file(project.join("calls")).unwrap();
+    fs::remove_file(project.join("target/release/herdr-grid-slide.exe")).unwrap();
+    for failure in ["build", "copy"] {
+        let output = run(failure);
+        assert!(!output.status.success(), "{failure}: {output:?}");
+        if failure == "build" {
+            assert_eq!(output.status.code(), Some(42));
+        }
+        assert_eq!(fs::read(&installed).unwrap(), b"previous local build");
+        assert!(!project.join("calls").exists());
+    }
+    // Windows denies replacement while a process holds the executable open.
+    let locked = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(1)
+        .open(&installed)
+        .unwrap();
+    assert!(!run("").status.success());
+    assert!(!project.join("calls").exists());
+    assert_eq!(fs::read(&installed).unwrap(), b"previous local build");
+    drop(locked);
+    for (failure, calls) in [
+        ("plugin link .", "plugin link .\n"),
+        (
+            "server reload-config",
+            "plugin link .\nserver reload-config\n",
+        ),
+    ] {
+        let output = run(failure);
+        assert_eq!(output.status.code(), Some(43), "{output:?}");
+        assert_eq!(
+            fs::read_to_string(project.join("calls"))
+                .unwrap()
+                .replace('\r', ""),
+            calls
+        );
+        fs::remove_file(project.join("calls")).unwrap();
+    }
+    assert_eq!(fs::read_dir(project.join("bin")).unwrap().count(), 1);
+}
 
 #[test]
 fn an_action_waits_for_a_busy_herdr_connection_then_completes() {

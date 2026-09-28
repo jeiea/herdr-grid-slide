@@ -11,7 +11,7 @@ if [ "$shellcheck_version" != 0.11.0 ]; then
 fi
 
 ./scripts/check-version.sh
-shellcheck scripts/*.sh tests/*.sh .mise/tasks/*
+shellcheck scripts/*.sh tests/*.sh .mise/tasks/*.sh
 for test_script in tests/*.sh
 do
   sh "$test_script"

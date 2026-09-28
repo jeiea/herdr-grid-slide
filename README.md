@@ -2,59 +2,13 @@
 
 A plugin born from the idea of focusing and moving panes with hjkl.
 
-## Support
-
-Minimum Herdr version: **0.8.0**. Release targets: macOS and Linux, each on arm64 and x86_64,
-and Windows x64.
-The eight live scenarios passed on macOS arm64 with Herdr 0.8.0, 0.8.2, and 0.9.0; other
-platforms and versions have not been exercised in that run. See
-[verification details](docs/testing.md#recorded-results).
-
 ## Install
 
-Installation requires a published release.
+Minimum Herdr support: **0.8.0**.
 
 ```sh
 herdr plugin install jeiea/herdr-grid-slide
 ```
-
-Requires Herdr, git, and the installer tools for your platform. Release binary installation
-does not require Rust.
-
-| Platform | Installer tools |
-| --- | --- |
-| macOS / Linux | `sh`, `curl`, `awk`, basic Unix utilities, and `sha256sum` or `shasum` |
-| Windows x64 | Windows PowerShell 5.1 (`powershell.exe`), `curl.exe`, and `Get-FileHash` |
-
-The installer verifies the release checksum before replacing the installed binary.
-
-## Behavior
-
-`to-new-workspace` moves the focused pane to a new workspace immediately after its source,
-while `tab-to-new-workspace` moves the current **whole tab** there. A pane move does nothing when its
-pane is the only pane in the workspace's only tab; a whole-tab move does nothing when its tab is
-the workspace's only tab. Both actions keep focus on the moved pane. Previous/next workspace tab
-actions append an independent tab at the destination, closing the source workspace if it becomes
-empty.
-
-Successful pane moves across tab or workspace boundaries keep the server focus and connected
-shell view on the moved pane. See [movement and balancing](docs/behavior.md) for compensation
-timing, partial-success behavior, and the current multi-client limitation.
-
-Tabs are automatically balanced when a focus or pane termination event observes a tab entry,
-changed panes, or changed area, and on certain move paths. Balancing can change split structure
-and proportions; a temporary tab may appear.
-
-## Checks
-
-With mise and the configured Rust and ShellCheck installed, run `mise run check` for the local
-quality gate on macOS or Linux. Windows CI runs the Rust tests and PowerShell installer tests;
-see [Windows checks](docs/testing.md#check-windows-support). On macOS arm64,
-`mise run test-herdr-0.8.0` downloads and tests the minimum version.
-With Herdr 0.8.2 on PATH, `mise run live-herdr` runs eight isolated session scenarios. Set
-`HERDR_TEST_VERSION='herdr 0.9.0'` to check an installed Herdr 0.9.0 instead.
-See [verification prerequisites](docs/testing.md#test-the-minimum-supported-herdr-version)
-and the [release procedure](docs/releasing.md).
 
 ## Configuration
 

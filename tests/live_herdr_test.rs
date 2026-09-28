@@ -688,13 +688,21 @@ impl LiveHerdr {
         let unique = unique_suffix();
         // Herdr repeats both components in its socket path, so keep their prefixes short.
         let name = format!("h-{unique}");
-        let root = PathBuf::from("/tmp").join(&name);
+        let temporary = if cfg!(windows) {
+            std::env::temp_dir()
+        } else {
+            PathBuf::from("/tmp")
+        };
+        let root = temporary.join(&name);
         let config_home = root.join("config");
         let state_home = root.join("state");
         let runtime_dir = root.join("runtime");
         let config_path = root.join("herdr-config.toml");
         let plugin_root = root.join("plugin");
-        let plugin_binary = plugin_root.join("bin/herdr-grid-slide");
+        let plugin_binary = plugin_root.join(format!(
+            "bin/herdr-grid-slide{}",
+            std::env::consts::EXE_SUFFIX
+        ));
         let session = name;
         let herdr = PathBuf::from("herdr");
 
@@ -835,7 +843,11 @@ impl LiveHerdr {
             .and_then(|command| command.first())
             .and_then(Value::as_str)
             .ok_or_else(|| format!("link response omitted move-right entrypoint: {response}"))?;
-        assert_same_path(self.plugin_root.join(entrypoint), &self.plugin_binary)
+        let mut executable = self.plugin_root.join(entrypoint);
+        if cfg!(windows) {
+            executable.set_extension(std::env::consts::EXE_EXTENSION);
+        }
+        assert_same_path(executable, &self.plugin_binary)
     }
 
     fn create_workspace(&self, label: &str) -> Result<Fixture, String> {
