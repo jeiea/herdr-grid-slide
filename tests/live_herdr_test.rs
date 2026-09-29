@@ -29,6 +29,59 @@ static SESSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
+fn returning_after_detaching_a_pane_focuses_the_edge_of_the_balanced_tab() {
+    for action in ["focus-left", "move-left"] {
+        let mut live = LiveHerdr::start().expect("start isolated Herdr session");
+        let fixture = live
+            .create_workspace("return-to-grid")
+            .expect("create workspace");
+        live.link_plugin().expect("link copied plugin");
+        for _ in 0..5 {
+            live.invoke_action_and_wait_for_balance("new-pane")
+                .expect("grow six-pane grid");
+        }
+        let grid = live.snapshot().expect("capture six-pane grid");
+        let order = panes_in_reading_order(&grid, &fixture.tab_id);
+        let detached = order[0].to_owned();
+        let expected_terminal = terminal_id(&grid, order[3]);
+        live.run_json(["pane", "focus", "--direction", "left", "--pane", order[1]])
+            .expect("focus first pane");
+        live.invoke_action("to-new-tab").expect("detach first pane");
+        let stale = live.snapshot().expect("capture deferred background grid");
+        let remaining = panes_in_reading_order(&stale, &fixture.tab_id);
+        assert_eq!(remaining.len(), 5);
+        assert_eq!(
+            pane_rect(&stale, &fixture.tab_id, remaining[0])["y"],
+            pane_rect(&stale, &fixture.tab_id, remaining[1])["y"]
+        );
+        assert_ne!(
+            pane_rect(&stale, &fixture.tab_id, remaining[1])["y"],
+            pane_rect(&stale, &fixture.tab_id, remaining[2])["y"]
+        );
+        // Give F an upper-half entry anchor without focusing the background tab.
+        live.split_pane(&detached, "down", false)
+            .expect("set upper-half source geometry");
+        live.invoke_action(action).expect("return to balanced grid");
+        let after = live.snapshot().expect("capture final focus");
+        let expected = pane_by_terminal_id(&after, &expected_terminal)["pane_id"]
+            .as_str()
+            .unwrap();
+        let order = panes_in_reading_order(&after, &fixture.tab_id);
+        assert_eq!(order[2], expected);
+        if action == "focus-left" {
+            assert_eq!(focused_pane_id(&after), expected);
+        } else {
+            assert_eq!(focused_pane_id(&after), detached);
+            assert_eq!(order[3], detached);
+        }
+        assert!(
+            pane_x(&after, &fixture.tab_id, order[2]) > pane_x(&after, &fixture.tab_id, order[1])
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires Herdr and starts an isolated named session"]
 fn adding_six_panes_aligns_columns_and_builds_matching_rows() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let fixture = live

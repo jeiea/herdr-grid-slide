@@ -66,7 +66,8 @@ enum Command {
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum BalanceFocusPolicy {
+enum BalanceFocusPolicy<'a> {
+    BeforeEntry(Option<&'a str>),
     Automatic,
     Explicit,
 }
@@ -252,10 +253,6 @@ impl PaneDirection {
             PaneDirection::Left => false,
         }
     }
-
-    fn is_horizontal(self) -> bool {
-        matches!(self, PaneDirection::Left | PaneDirection::Right)
-    }
 }
 
 #[derive(Clone, Copy, Deserialize)]
@@ -319,7 +316,7 @@ struct GridRow<'a> {
 /// them belong on each row.
 struct GridPlan<'a> {
     bounds: Bounds,
-    focus_policy: BalanceFocusPolicy,
+    focus_policy: BalanceFocusPolicy<'a>,
     focus_pane_id: &'a str,
     order: Vec<&'a str>,
     row_sizes: Vec<usize>,
@@ -883,13 +880,21 @@ fn focus_with_anchor(
         .state_dir
         .as_ref()
         .ok_or("missing HERDR_PLUGIN_STATE_DIR")?;
-    fs::create_dir_all(state_dir).map_err(|error| error.to_string())?;
-    let snapshot = read_snapshot(client)?;
-    let navigation = navigation_context(context, &snapshot);
+    let lock = lock_balance(context)?;
     let state = read_focus_anchor_state(state_dir)?;
+    let snapshot =
+        snapshot_after_destination_balance(context, direction, state.as_ref(), &lock, client)?;
+    let navigation = navigation_context(context, &snapshot);
     let (target, next_state) =
         resolve_focus_target(&navigation, direction, &snapshot, state.as_ref())?;
     client.request("pane.focus", json!({"pane_id": target.pane_id}))?;
+    if next_state.tab_id != navigation.tab_id {
+        let observed = observed_balance_focus(
+            &next_state.tab_id,
+            Some(find_layout(&snapshot, &next_state.tab_id)?),
+        );
+        write_state_file(state_dir, BALANCE_FOCUS_STATE_FILE, &observed)?;
+    }
     write_focus_anchor_state(state_dir, &next_state)
 }
 
@@ -902,10 +907,11 @@ fn move_directionally(
         .state_dir
         .as_ref()
         .ok_or("missing HERDR_PLUGIN_STATE_DIR")?;
-    fs::create_dir_all(state_dir).map_err(|error| error.to_string())?;
-    let snapshot = read_snapshot(client)?;
-    let navigation = navigation_context(context, &snapshot);
+    let lock = lock_balance(context)?;
     let state = read_focus_anchor_state(state_dir)?;
+    let snapshot =
+        snapshot_after_destination_balance(context, direction, state.as_ref(), &lock, client)?;
+    let navigation = navigation_context(context, &snapshot);
     let (target, mut next_state) =
         resolve_focus_target(&navigation, direction, &snapshot, state.as_ref())?;
     if target.pane_id == navigation.pane_id {
@@ -954,10 +960,72 @@ fn move_directionally(
             next_state.pane_id
         )
     })?;
-    if direction.is_horizontal() {
-        balance_focused_pane(context, client, Some(&target_tab_id))
-            .map_err(|error| format!("pane moved, but automatic balance failed: {error}"))?;
+    balance_focused_pane_locked(&lock, client, Some(&target_tab_id))
+        .map_err(|error| format!("pane moved, but automatic balance failed: {error}"))?;
+    Ok(())
+}
+
+/// A pane picked from a stale background layout may move away from the entry edge
+/// during the focus hook (E C / A D B becomes E C A / D B). Balance first, then
+/// choose from a fresh snapshot. Holding the hook's lock through entry lets us
+/// publish the settled state before queued pane.focused hooks can repeat the work.
+fn snapshot_after_destination_balance(
+    context: &Context,
+    direction: PaneDirection,
+    state: Option<&FocusAnchorState>,
+    lock: &BalanceLock,
+    client: &mut SocketClient,
+) -> Result<Snapshot> {
+    let mut snapshot = read_snapshot(client)?;
+    let navigation = navigation_context(context, &snapshot);
+    let (_, target) = resolve_focus_target(&navigation, direction, &snapshot, state)?;
+    if target.tab_id != navigation.tab_id {
+        balance_destination_before_entry(lock, client, &mut snapshot, &target.tab_id)?;
     }
+    Ok(snapshot)
+}
+
+/// Use the same entry/pane-set/area comparison as the focus hook, but keep the
+/// current tab visible throughout background rebuilding. Do not cache a completed
+/// entry until focus succeeds; failed or declined moves must leave the old state.
+fn balance_destination_before_entry(
+    lock: &BalanceLock,
+    client: &mut SocketClient,
+    snapshot: &mut Snapshot,
+    tab_id: &str,
+) -> Result<()> {
+    let layout = find_layout(snapshot, tab_id)?;
+    let observed = observed_balance_focus(tab_id, Some(layout));
+    if layout.panes.len() <= 1
+        || read_balance_focus_state(lock.state_dir)?.as_ref() == Some(&observed)
+    {
+        return Ok(());
+    }
+    let source_tab_id = snapshot.focused_tab_id.clone();
+    balance_automatic_layout(
+        client,
+        layout,
+        tab_id,
+        workspace_id_for_tab(snapshot, tab_id)?,
+        layout
+            .focused_pane_id
+            .as_deref()
+            .unwrap_or(&layout.panes[0].pane_id),
+        BalanceFocusPolicy::BeforeEntry(source_tab_id.as_deref()),
+    )
+    .map_err(|error| format!("could not balance {tab_id} before entry: {error}"))?;
+    let refreshed = read_snapshot(client)?;
+    if refreshed.focused_tab_id != source_tab_id {
+        return Err(format!(
+            "focus changed while preparing {tab_id}; entry cancelled"
+        ));
+    }
+    if observed != observed_balance_focus(tab_id, Some(find_layout(&refreshed, tab_id)?)) {
+        return Err(format!(
+            "{tab_id} changed while it was being balanced; try again"
+        ));
+    }
+    *snapshot = refreshed;
     Ok(())
 }
 
@@ -1098,9 +1166,14 @@ fn balance_focused_pane_locked(
         let Some(focus_pane_id) = snapshot.focused_pane_id.as_deref() else {
             continue;
         };
-        if let Err(error) =
-            balance_automatic_layout(client, snapshot_layout, tab_id, workspace_id, focus_pane_id)
-        {
+        if let Err(error) = balance_automatic_layout(
+            client,
+            snapshot_layout,
+            tab_id,
+            workspace_id,
+            focus_pane_id,
+            BalanceFocusPolicy::Automatic,
+        ) {
             failures.push(format!("could not automatically balance {tab_id}: {error}"));
         }
     }
@@ -1118,7 +1191,7 @@ fn balance_layout(
     tab_id: &str,
     workspace_id: &str,
     focus_pane_id: &str,
-    focus_policy: BalanceFocusPolicy,
+    focus_policy: BalanceFocusPolicy<'_>,
 ) -> Result<()> {
     let layout = read_layout(client, tab_id)?;
     if !holds_the_same_panes(snapshot_layout, &layout.root) {
@@ -1147,6 +1220,7 @@ fn balance_automatic_layout(
     tab_id: &str,
     workspace_id: &str,
     focus_pane_id: &str,
+    focus_policy: BalanceFocusPolicy<'_>,
 ) -> Result<()> {
     let layout = read_layout(client, tab_id)?;
     if layout.zoomed {
@@ -1164,7 +1238,7 @@ fn balance_automatic_layout(
         tab_id,
         workspace_id,
         focus_pane_id,
-        BalanceFocusPolicy::Automatic,
+        focus_policy,
     )
 }
 
@@ -1175,7 +1249,7 @@ fn balance_exported_layout(
     tab_id: &str,
     workspace_id: &str,
     focus_pane_id: &str,
-    focus_policy: BalanceFocusPolicy,
+    focus_policy: BalanceFocusPolicy<'_>,
 ) -> Result<()> {
     let order = reading_order(snapshot_layout);
     if order.len() < 2 {
@@ -1207,8 +1281,16 @@ fn sort_grid(
 ) -> Result<()> {
     let placed = grid.iter().flat_map(|row| row.panes.iter().copied());
     let swaps = swaps_towards(placed.collect(), &plan.order);
+    // Herdr's pane.swap focuses its source. A background grid whose tree no longer
+    // agrees with the snapshot must be read again, not exposed mid-preparation.
+    if !swaps.is_empty() && matches!(plan.focus_policy, BalanceFocusPolicy::BeforeEntry(_)) {
+        return Err(format!(
+            "{} changed while it was being read; try again",
+            plan.tab_id
+        ));
+    }
     for (index, (source, target)) in swaps.iter().enumerate() {
-        ensure_automatic_target_is_focused(client, plan)?;
+        ensure_balance_focus_is_current(client, plan)?;
         let swap = client.request(
             "pane.swap",
             json!({"source_pane_id": source, "target_pane_id": target}),
@@ -1244,7 +1326,7 @@ fn rebuild_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
         .ok_or("nothing to balance in an empty tab")?;
     let mut scratch = ScratchTab::default();
     for pane in staged {
-        ensure_automatic_target_is_focused(client, plan)
+        ensure_balance_focus_is_current(client, plan)
             .map_err(|error| recovered(client, plan, anchor, &scratch, error))?;
         let destination = match &scratch.tab_id {
             Some(tab_id) => tab_edge(tab_id),
@@ -1272,7 +1354,7 @@ fn rebuild_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
         }
     }
     for (pane, target, direction) in grid_moves(&plan.rows()) {
-        ensure_automatic_target_is_focused(client, plan)
+        ensure_balance_focus_is_current(client, plan)
             .map_err(|error| recovered(client, plan, anchor, &scratch, error))?;
         let destination = attachment(plan.tab_id, target, direction);
         if let Err(error) = move_pane_to(client, pane, destination) {
@@ -1300,6 +1382,9 @@ fn restore_focus_after_success(
     plan: &GridPlan,
     expected_focus_pane_id: &str,
 ) -> Result<()> {
+    if matches!(plan.focus_policy, BalanceFocusPolicy::BeforeEntry(_)) {
+        return Ok(());
+    }
     if plan.focus_policy == BalanceFocusPolicy::Explicit {
         client.request("pane.focus", json!({"pane_id": plan.focus_pane_id}))?;
         return Ok(());
@@ -1348,22 +1433,27 @@ fn settle_rebuilt_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()>
     Ok(())
 }
 
-fn ensure_automatic_target_is_focused(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
-    if plan.focus_policy == BalanceFocusPolicy::Explicit {
-        return Ok(());
-    }
+fn ensure_balance_focus_is_current(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
+    let expected = match plan.focus_policy {
+        BalanceFocusPolicy::Explicit => return Ok(()),
+        BalanceFocusPolicy::Automatic => Some(plan.tab_id),
+        BalanceFocusPolicy::BeforeEntry(source_tab_id) => source_tab_id,
+    };
     let snapshot = read_snapshot(client)?;
-    if snapshot.focused_tab_id.as_deref() == Some(plan.tab_id) {
+    if snapshot.focused_tab_id.as_deref() == expected {
         Ok(())
     } else {
         Err(format!(
             "focus left {} while it was being balanced",
-            plan.tab_id
+            expected.unwrap_or("the source tab")
         ))
     }
 }
 
-/// Where a pane goes when it joins a tab at its right edge.
+/// Direct tab/workspace sends attach beside Herdr's last-focused destination
+/// pane, an identity choice rather than a geometric edge lookup. They do not need
+/// the pre-entry balance used by directional navigation; the changed pane set is
+/// balanced after arrival.
 fn tab_edge(tab_id: &str) -> Value {
     json!({"type": "tab", "tab_id": tab_id, "split": "right", "ratio": 0.5})
 }
