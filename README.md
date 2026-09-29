@@ -32,6 +32,10 @@ Bind actions in `~/.config/herdr/config.toml`.
 <summary>Example key bindings</summary>
 
 ```toml
+[keys]
+move_tab_previous = "ctrl+alt+h"
+move_tab_next = "ctrl+alt+l"
+
 [[keys.command]]
 key = "alt+h"
 type = "plugin_action"
