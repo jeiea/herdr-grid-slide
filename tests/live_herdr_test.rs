@@ -1,3 +1,15 @@
+//! Headless smoke tests against a real Herdr in isolated named sessions. They
+//! verify final server state but cannot see which tab a connected shell client
+//! displays, so cross-container focus (herdrdev/herdr#4153) needs a manual check
+//! before release: in an isolated session with a linked copy of the plugin, use
+//! the real left/right keys across a tab boundary, direct next-tab and
+//! next-workspace moves, `to-new-workspace` from a multi-pane tab, a leading-pane
+//! whole-tab move, and `to-new-tab`, with plain new-tab/new-workspace keys as
+//! negative cases. After each, the displayed tab must match the server snapshot,
+//! hooks must finish without repeating, and the next input must reach the
+//! displayed pane. With two connected clients both views switch to the
+//! destination; that is the expected limitation of `focus_moved_pane`.
+
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};

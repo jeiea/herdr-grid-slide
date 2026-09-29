@@ -1412,7 +1412,9 @@ fn request_pane_move(
 /// views (herdrdev/herdr#4153), and a boundary move that uses `focus: false`
 /// followed by `pane.swap` to enter before its target has the same gap. Remove
 /// this compensation only after every supported Herdr projects both forms to
-/// the destination tab.
+/// the destination tab. `pane.focus` switches every connected shell client, not
+/// only the invoking one, because plugins receive no client identifier; that is
+/// still better than leaving the invoking view behind.
 fn focus_moved_pane(client: &mut SocketClient, pane_id: &str) -> Result<()> {
     client
         .request("pane.focus", json!({"pane_id": pane_id}))
