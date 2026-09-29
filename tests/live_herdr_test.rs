@@ -29,81 +29,47 @@ static SESSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
-fn returning_after_detaching_a_pane_focuses_the_edge_of_the_balanced_tab() {
-    for action in ["focus-left", "move-left"] {
-        let mut live = LiveHerdr::start().expect("start isolated Herdr session");
-        let fixture = live
-            .create_workspace("return-to-grid")
-            .expect("create workspace");
-        live.link_plugin().expect("link copied plugin");
-        for _ in 0..5 {
-            live.invoke_action_and_wait_for_balance("new-pane")
-                .expect("grow six-pane grid");
-        }
-        let grid = live.snapshot().expect("capture six-pane grid");
-        let order = panes_in_reading_order(&grid, &fixture.tab_id);
-        let detached = order[0].to_owned();
-        let expected_terminal = terminal_id(&grid, order[3]);
-        live.run_json(["pane", "focus", "--direction", "left", "--pane", order[1]])
-            .expect("focus first pane");
-        live.invoke_action("to-new-tab").expect("detach first pane");
-        let stale = live.snapshot().expect("capture deferred background grid");
-        let remaining = panes_in_reading_order(&stale, &fixture.tab_id);
-        assert_eq!(remaining.len(), 5);
-        assert_eq!(
-            pane_rect(&stale, &fixture.tab_id, remaining[0])["y"],
-            pane_rect(&stale, &fixture.tab_id, remaining[1])["y"]
-        );
-        assert_ne!(
-            pane_rect(&stale, &fixture.tab_id, remaining[1])["y"],
-            pane_rect(&stale, &fixture.tab_id, remaining[2])["y"]
-        );
-        // Give F an upper-half entry anchor without focusing the background tab.
-        live.split_pane(&detached, "down", false)
-            .expect("set upper-half source geometry");
-        live.invoke_action(action).expect("return to balanced grid");
-        let after = live.snapshot().expect("capture final focus");
-        let expected = pane_by_terminal_id(&after, &expected_terminal)["pane_id"]
-            .as_str()
-            .unwrap();
-        let order = panes_in_reading_order(&after, &fixture.tab_id);
-        assert_eq!(order[2], expected);
-        if action == "focus-left" {
-            assert_eq!(focused_pane_id(&after), expected);
-        } else {
-            assert_eq!(focused_pane_id(&after), detached);
-            assert_eq!(order[3], detached);
-        }
-        assert!(
-            pane_x(&after, &fixture.tab_id, order[2]) > pane_x(&after, &fixture.tab_id, order[1])
-        );
-    }
-}
-
-#[test]
-#[ignore = "requires Herdr and starts an isolated named session"]
-fn adding_six_panes_aligns_columns_and_builds_matching_rows() {
+fn arranging_panes_across_tabs_and_workspaces_keeps_every_view_balanced_and_focused() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
-    let fixture = live
-        .create_workspace("grid-columns")
+    let initial = live
+        .create_workspace("pane journey")
         .expect("create workspace");
     live.link_plugin().expect("link copied plugin");
-    for _ in 0..5 {
-        live.invoke_action_and_wait_for_balance("new-pane")
-            .expect("add pane and settle grid");
+    let snapshot = live.snapshot().expect("initial snapshot");
+    let a = terminal_id(&snapshot, &initial.root_pane_id);
+    live.assert_scene(&snapshot, &a, &[vec![vec![&a]]]);
+    let mut added = Vec::new();
+    for (stage, order) in [
+        ("add B", vec![0, 1]),
+        ("add C", vec![0, 2, 1]),
+        ("add D", vec![0, 2, 3, 1]),
+        ("add E", vec![0, 4, 2, 3, 1]),
+        ("add F", vec![0, 4, 2, 3, 5, 1]),
+    ] {
+        let snapshot = live.step(stage, "new-pane", Some("pane.focused"));
+        added.push(terminal_id(&snapshot, &focused_pane_id(&snapshot)));
+        let terminals: Vec<_> = std::iter::once(a.as_str())
+            .chain(added.iter().map(String::as_str))
+            .collect();
+        live.assert_scene(
+            &snapshot,
+            added.last().unwrap(),
+            &[vec![order.iter().map(|&i| terminals[i]).collect()]],
+        );
     }
-    let before = live.snapshot().expect("capture automatic grid");
-    let order = panes_in_reading_order(&before, &fixture.tab_id);
-    assert_eq!(order.len(), 6);
-    let splits = tab_layout(&before, &fixture.tab_id)["splits"]
+    let [b, c, d, e, f] = added.as_slice() else {
+        panic!("five added panes")
+    };
+    let grid = live.last_snapshot.as_ref().unwrap();
+    // Matching left-nested splits under both root children prove two three-column rows.
+    let split_ids: Vec<_> = tab_layout(grid, &initial.tab_id)["splits"]
         .as_array()
-        .unwrap();
-    let ids: Vec<_> = splits
+        .unwrap()
         .iter()
         .map(|split| split["id"].as_str().unwrap())
         .collect();
     assert_eq!(
-        ids,
+        split_ids,
         [
             "split_0_root",
             "split_1_0",
@@ -112,61 +78,230 @@ fn adding_six_panes_aligns_columns_and_builds_matching_rows() {
             "split_4_10"
         ]
     );
-    for column in 0..3 {
-        assert_eq!(
-            pane_x(&before, &fixture.tab_id, order[column]),
-            pane_x(&before, &fixture.tab_id, order[column + 3])
+    let layout = tab_layout(grid, &initial.tab_id).clone();
+    let snapshot = live.step("explicit balance preserves grid", "balance", None);
+    assert_eq!(tab_layout(&snapshot, &initial.tab_id), &layout);
+    live.assert_scene(&snapshot, f, &[vec![vec![&a, e, c, d, f, b]]]);
+    for (action, focused) in [
+        ("focus-left", d),
+        ("focus-up", &a),
+        ("focus-right", e),
+        ("focus-down", f),
+    ] {
+        let snapshot = live.step(action, action, Some("pane.focused"));
+        live.assert_scene(&snapshot, focused, &[vec![vec![&a, e, c, d, f, b]]]);
+    }
+    let snapshot = live.step("move F left", "move-left", None);
+    live.assert_scene(&snapshot, f, &[vec![vec![&a, e, c, f, d, b]]]);
+    let snapshot = live.step("move F up", "move-up", None);
+    live.assert_scene(&snapshot, f, &[vec![vec![f, e, c, &a, d, b]]]);
+    let snapshot = live.step("detach F to next tab", "to-new-tab", None);
+    live.assert_scene(&snapshot, f, &[vec![vec![e, c, &a, d, b], vec![f]]]);
+    assert_ne!(
+        pane_rect(
+            &snapshot,
+            &initial.tab_id,
+            pane_by_terminal_id(&snapshot, c)["pane_id"]
+                .as_str()
+                .unwrap()
+        )["y"],
+        pane_rect(&snapshot, &initial.tab_id, &initial.root_pane_id)["y"],
+        "background tab must still have two panes in its top row"
+    );
+
+    // The headless single-pane center lands on a row boundary. Use the existing
+    // upper-half entry fixture to make the upper-right A unambiguous.
+    live.begin_stage("upper-half entry fixture");
+    let detached = focused_pane_id(&snapshot);
+    let auxiliary = live
+        .split_pane(&detached, "down", false)
+        .expect("upper-half source");
+    let snapshot = live.snapshot().expect("entry fixture snapshot");
+    let auxiliary_terminal = terminal_id(&snapshot, &auxiliary);
+    let snapshot = live.step(
+        "enter balanced right edge A",
+        "focus-left",
+        Some("pane.focused"),
+    );
+    live.assert_scene(
+        &snapshot,
+        &a,
+        &[vec![vec![e, c, &a, d, b], vec![f, &auxiliary_terminal]]],
+    );
+    let snapshot = live.step("return to detached F", "focus-right", Some("pane.focused"));
+    live.assert_scene(
+        &snapshot,
+        f,
+        &[vec![vec![e, c, &a, d, b], vec![f, &auxiliary_terminal]]],
+    );
+    let snapshot = live.terminate("close unfocused auxiliary through API", &auxiliary, false);
+    live.assert_scene(&snapshot, f, &[vec![vec![e, c, &a, d, b], vec![f]]]);
+    let snapshot = live.step(
+        "move F into previous tab",
+        "move-left",
+        Some("pane.focused"),
+    );
+    live.assert_scene(&snapshot, f, &[vec![vec![e, c, &a, f, d, b]]]);
+    let snapshot = live.terminate("exit focused F", &focused_pane_id(&snapshot), true);
+    let survivor = terminal_id(&snapshot, &focused_pane_id(&snapshot));
+    live.assert_scene(&snapshot, &survivor, &[vec![vec![e, c, &a, d, b]]]);
+
+    let remaining: Vec<&str> = [e, c, &a, d, b]
+        .into_iter()
+        .map(String::as_str)
+        .filter(|id| *id != survivor)
+        .collect();
+    let snapshot = live.step(
+        "detach survivor to new workspace",
+        "to-new-workspace",
+        Some("pane.focused"),
+    );
+    live.assert_scene(
+        &snapshot,
+        &survivor,
+        &[vec![remaining.clone()], vec![vec![&survivor]]],
+    );
+    // Enter the bottom edge of the 2x2 grid; the centered anchor ties, so the
+    // reverse reading-order tie break selects the bottom-right pane.
+    let snapshot = live.step("focus previous workspace", "focus-up", Some("pane.focused"));
+    live.assert_scene(
+        &snapshot,
+        remaining[3],
+        &[vec![remaining.clone()], vec![vec![&survivor]]],
+    );
+    let snapshot = live.step("focus next workspace", "focus-down", Some("pane.focused"));
+    live.assert_scene(
+        &snapshot,
+        &survivor,
+        &[vec![remaining.clone()], vec![vec![&survivor]]],
+    );
+    let snapshot = live.step("create next tab", "new-tab", Some("pane.focused"));
+    let g = terminal_id(&snapshot, &focused_pane_id(&snapshot));
+    live.assert_scene(
+        &snapshot,
+        &g,
+        &[vec![remaining.clone()], vec![vec![&survivor], vec![&g]]],
+    );
+    let snapshot = live.step("add H in next tab", "new-pane", Some("pane.focused"));
+    let h = terminal_id(&snapshot, &focused_pane_id(&snapshot));
+    live.assert_scene(
+        &snapshot,
+        &h,
+        &[vec![remaining.clone()], vec![vec![&survivor], vec![&g, &h]]],
+    );
+    live.begin_stage("label moving tab");
+    live.run_json([
+        "tab",
+        "rename",
+        snapshot["focused_tab_id"].as_str().unwrap(),
+        "moving",
+    ])
+    .expect("label moving tab");
+    let snapshot = live.step(
+        "tab to previous workspace",
+        "tab-to-previous-workspace",
+        Some("pane.focused"),
+    );
+    live.assert_scene(
+        &snapshot,
+        &h,
+        &[vec![remaining.clone(), vec![&g, &h]], vec![vec![&survivor]]],
+    );
+    live.assert_focused_tab_label(&snapshot, "moving");
+    let snapshot = live.step(
+        "tab round trip to next workspace",
+        "tab-to-next-workspace",
+        Some("pane.focused"),
+    );
+    live.assert_scene(
+        &snapshot,
+        &h,
+        &[vec![remaining.clone()], vec![vec![&survivor], vec![&g, &h]]],
+    );
+    live.assert_focused_tab_label(&snapshot, "moving");
+    let snapshot = live.step(
+        "tab to new workspace",
+        "tab-to-new-workspace",
+        Some("pane.focused"),
+    );
+    live.assert_scene(
+        &snapshot,
+        &h,
+        &[
+            vec![remaining.clone()],
+            vec![vec![&survivor]],
+            vec![vec![&g, &h]],
+        ],
+    );
+    live.assert_focused_tab_label(&snapshot, "moving");
+    for (stage, action, middle, last) in [
+        ("right side up", "move-up", vec![&survivor, &h], vec![&g]),
+        (
+            "right side down",
+            "move-down",
+            vec![&survivor],
+            vec![&g, &h],
+        ),
+        (
+            "select left side",
+            "move-left",
+            vec![&survivor],
+            vec![&h, &g],
+        ),
+        ("left side up", "move-up", vec![&h, &survivor], vec![&g]),
+        ("left side down", "move-down", vec![&survivor], vec![&h, &g]),
+        (
+            "restore right side",
+            "move-right",
+            vec![&survivor],
+            vec![&g, &h],
+        ),
+    ] {
+        let snapshot = live.step(
+            stage,
+            action,
+            matches!(action, "move-up" | "move-down").then_some("pane.focused"),
+        );
+        live.assert_scene(
+            &snapshot,
+            &h,
+            &[
+                vec![remaining.clone()],
+                vec![middle.into_iter().map(String::as_str).collect()],
+                vec![last.into_iter().map(String::as_str).collect()],
+            ],
         );
     }
-    live.invoke_action("balance")
-        .expect("explicitly balance again");
-    let after = live.snapshot().expect("capture explicit grid");
-    assert_eq!(
-        tab_layout(&before, &fixture.tab_id),
-        tab_layout(&after, &fixture.tab_id)
+    let snapshot = live.step(
+        "reorder workspace before previous",
+        "move-workspace-previous",
+        Some("pane.focused"),
     );
+    live.assert_scene(
+        &snapshot,
+        &h,
+        &[
+            vec![remaining.clone()],
+            vec![vec![&g, &h]],
+            vec![vec![&survivor]],
+        ],
+    );
+    let snapshot = live.step(
+        "move only tab and close source workspace",
+        "tab-to-next-workspace",
+        Some("pane.focused"),
+    );
+    live.assert_scene(
+        &snapshot,
+        &h,
+        &[vec![remaining], vec![vec![&survivor], vec![&g, &h]]],
+    );
+    live.assert_focused_tab_label(&snapshot, "moving");
 }
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
-fn move_right_swaps_panes_in_the_same_tab_and_keeps_focus() {
-    let mut live = LiveHerdr::start().expect("start isolated Herdr session");
-    let source = live
-        .create_workspace("same-tab-source")
-        .expect("create source workspace");
-    let neighbor = live
-        .split_pane(&source.root_pane_id, "right", false)
-        .expect("split source tab");
-    live.link_plugin().expect("link copied plugin");
-
-    let before = live.snapshot().expect("capture pre-action snapshot");
-    assert_eq!(
-        pane_ids_in_tab(&before, &source.tab_id),
-        BTreeSet::from([source.root_pane_id.clone(), neighbor.clone()])
-    );
-    assert!(
-        pane_x(&before, &source.tab_id, &source.root_pane_id)
-            < pane_x(&before, &source.tab_id, &neighbor)
-    );
-
-    live.invoke_action("move-right")
-        .expect("invoke move-right and wait for its log");
-
-    let after = live.snapshot().expect("capture post-action snapshot");
-    assert_eq!(
-        pane_ids_in_tab(&after, &source.tab_id),
-        BTreeSet::from([source.root_pane_id.clone(), neighbor.clone()])
-    );
-    assert!(
-        pane_x(&after, &source.tab_id, &source.root_pane_id)
-            > pane_x(&after, &source.tab_id, &neighbor)
-    );
-    assert_eq!(focused_pane_id(&after), source.root_pane_id);
-}
-
-#[test]
-#[ignore = "requires Herdr and starts an isolated named session"]
-fn move_right_then_left_crosses_the_tab_boundary_and_keeps_focus() {
+fn crossing_tabs_inserts_at_the_entry_edge_and_leaves_both_tabs_open_on_return() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let source = live
         .create_workspace("tab-boundary-source")
@@ -180,41 +315,35 @@ fn move_right_then_left_crosses_the_tab_boundary_and_keeps_focus() {
     live.focus_tab(&source.tab_id).expect("focus source tab");
     live.link_plugin().expect("link copied plugin");
 
-    let before = live.snapshot().expect("capture pre-action snapshot");
-    assert_eq!(focused_pane_id(&before), moving);
-
-    live.invoke_action("move-right")
-        .expect("invoke move-right and wait for its log");
-
-    let after_right = live.snapshot().expect("capture post-right snapshot");
-    assert_eq!(
-        pane_ids_in_tab(&after_right, &source.tab_id),
-        BTreeSet::from([source.root_pane_id.clone()])
+    let before = live.snapshot().expect("snapshot before crossing");
+    let stationary = terminal_id(&before, &source.root_pane_id);
+    let moving = terminal_id(&before, &moving);
+    let target = terminal_id(&before, &destination.root_pane_id);
+    let after = live.step(
+        "enter next tab before its first pane",
+        "move-right",
+        Some("pane.focused"),
     );
-    assert_eq!(
-        pane_ids_in_tab(&after_right, &destination.tab_id),
-        BTreeSet::from([destination.root_pane_id.clone(), moving.clone()])
+    live.assert_scene(
+        &after,
+        &moving,
+        &[vec![vec![&stationary], vec![&moving, &target]]],
     );
-    assert_eq!(focused_pane_id(&after_right), moving);
-
-    live.invoke_action("move-left")
-        .expect("invoke move-left and wait for its log");
-
-    let after_left = live.snapshot().expect("capture post-left snapshot");
-    assert_eq!(
-        pane_ids_in_tab(&after_left, &source.tab_id),
-        BTreeSet::from([source.root_pane_id.clone(), moving.clone()])
+    let after = live.step(
+        "return while leaving the departure tab open",
+        "move-left",
+        None,
     );
-    assert_eq!(
-        pane_ids_in_tab(&after_left, &destination.tab_id),
-        BTreeSet::from([destination.root_pane_id.clone()])
+    live.assert_scene(
+        &after,
+        &moving,
+        &[vec![vec![&stationary, &moving], vec![&target]]],
     );
-    assert_eq!(focused_pane_id(&after_left), moving);
 }
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
-fn to_new_tab_places_the_detached_pane_in_the_next_tab_and_sets_server_focus_to_it() {
+fn detaching_a_pane_inserts_and_focuses_a_new_tab_before_the_trailing_tab() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let source = live
         .create_workspace("new-tab-source")
@@ -228,224 +357,146 @@ fn to_new_tab_places_the_detached_pane_in_the_next_tab_and_sets_server_focus_to_
     live.focus_tab(&source.tab_id).expect("focus source tab");
     live.link_plugin().expect("link copied plugin");
 
-    let before = live.snapshot().expect("capture pre-action snapshot");
-    let moving_terminal_id = terminal_id(&before, &moving);
-    assert_eq!(focused_pane_id(&before), moving);
-
-    // The headless harness covers real server requests and state, not client views.
-    live.invoke_action("to-new-tab")
-        .expect("invoke to-new-tab and wait for its log");
-
-    let after = live.snapshot().expect("capture post-action snapshot");
-    let moved = pane_by_terminal_id(&after, &moving_terminal_id);
-    let moved_pane_id = moved["pane_id"].as_str().expect("moved pane ID");
-    let created_tab_id = moved["tab_id"].as_str().expect("created tab ID");
-    let tab_order: Vec<_> = after["tabs"]
-        .as_array()
-        .expect("snapshot tab list")
-        .iter()
-        .filter(|tab| tab["workspace_id"] == source.workspace_id)
-        .map(|tab| tab["tab_id"].as_str().expect("tab ID"))
-        .collect();
-
-    assert_eq!(
-        tab_order,
-        [
-            source.tab_id.as_str(),
-            created_tab_id,
-            trailing.tab_id.as_str()
-        ]
-    );
-    assert_eq!(moved["workspace_id"], source.workspace_id);
-    assert_eq!(moved["focused"], true);
-    assert_eq!(after["focused_tab_id"], created_tab_id);
-    assert_eq!(focused_pane_id(&after), moved_pane_id);
-    assert_eq!(
-        pane_ids_in_tab(&after, &source.tab_id),
-        BTreeSet::from([source.root_pane_id.clone()])
-    );
-    assert_eq!(
-        pane_ids_in_tab(&after, created_tab_id),
-        BTreeSet::from([moved_pane_id.to_owned()])
-    );
-    assert_eq!(
-        pane_ids_in_tab(&after, &trailing.tab_id),
-        BTreeSet::from([trailing.root_pane_id])
+    let before = live.snapshot().expect("snapshot before detaching");
+    let stationary = terminal_id(&before, &source.root_pane_id);
+    let moving = terminal_id(&before, &moving);
+    let trailing = terminal_id(&before, &trailing.root_pane_id);
+    let after = live.step("detach before trailing tab", "to-new-tab", None);
+    live.assert_scene(
+        &after,
+        &moving,
+        &[vec![vec![&stationary], vec![&moving], vec![&trailing]]],
     );
 }
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
-fn vertical_round_trips_keep_the_side_selected_by_the_user() {
+fn wrapping_between_workspaces_uses_the_active_tab_and_preserves_the_selected_side() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let previous = live
-        .create_workspace("previous-workspace")
-        .expect("create previous workspace");
-    let active_previous = live
-        .create_tab(&previous.workspace_id, "active-previous-tab")
-        .expect("create active tab in previous workspace");
+        .create_workspace("previous")
+        .expect("previous workspace");
+    let active = live
+        .create_tab(&previous.workspace_id, "active")
+        .expect("active tab");
     let original = live
-        .create_workspace("original-workspace")
-        .expect("create original workspace");
+        .create_workspace("original")
+        .expect("original workspace");
     let moving = live
         .split_pane(&original.root_pane_id, "right", true)
-        .expect("create focused right pane");
+        .expect("right pane");
     live.link_plugin().expect("link copied plugin");
-
-    let before = live.snapshot().expect("capture pre-action snapshot");
-    let moving_terminal_id = terminal_id(&before, &moving);
-    let inactive_previous_panes = pane_ids_in_tab(&before, &previous.tab_id);
-    assert!(
-        workspace_number(&before, &previous.workspace_id)
-            < workspace_number(&before, &original.workspace_id)
+    let before = live.snapshot().expect("initial snapshot");
+    let inactive = terminal_id(&before, &previous.root_pane_id);
+    let target = terminal_id(&before, &active.root_pane_id);
+    let stationary = terminal_id(&before, &original.root_pane_id);
+    let moving = terminal_id(&before, &moving);
+    let snapshot = live.step(
+        "wrap down to first workspace active tab",
+        "move-down",
+        Some("pane.focused"),
     );
-    assert_eq!(focused_pane_id(&before), moving);
-
-    let to_previous = (&original, &active_previous);
-    let to_original = (&active_previous, &original);
-    let unchanged = (previous.tab_id.as_str(), &inactive_previous_panes);
-    let vertical = |live: &mut LiveHerdr, stage, action_id, route, moving_first| {
-        assert_vertical_move(
-            live,
-            stage,
-            action_id,
-            &moving_terminal_id,
-            route,
-            moving_first,
-            unchanged,
-        );
-    };
-    let same_tab = |live: &mut LiveHerdr, stage, action_id, destination, moving_first| {
-        live.invoke_action(action_id)
-            .unwrap_or_else(|error| panic!("{stage}: {action_id} failed: {error}"));
-        let snapshot = live
-            .snapshot()
-            .unwrap_or_else(|error| panic!("{stage}: capture snapshot after {action_id}: {error}"));
-        assert_two_pane_position(
-            &snapshot,
-            stage,
-            action_id,
-            &moving_terminal_id,
-            destination,
-            moving_first,
-        );
-    };
-
-    let stage = "right pure round trip";
-    vertical(&mut live, stage, "move-up", to_previous, false);
-    vertical(&mut live, stage, "move-down", to_original, false);
-
-    let stage = "left selected before down";
-    vertical(&mut live, stage, "move-up", to_previous, false);
-    same_tab(&mut live, stage, "move-left", &active_previous, true);
-    vertical(&mut live, stage, "move-down", to_original, true);
-
-    let stage = "left pure round trip";
-    vertical(&mut live, stage, "move-up", to_previous, true);
-    vertical(&mut live, stage, "move-down", to_original, true);
-
-    let stage = "left selected before up";
-    same_tab(&mut live, stage, "move-right", &original, false);
-    vertical(&mut live, stage, "move-down", to_previous, false);
-    same_tab(&mut live, stage, "move-left", &active_previous, true);
-    vertical(&mut live, stage, "move-up", to_original, true);
+    live.assert_scene(
+        &snapshot,
+        &moving,
+        &[
+            vec![vec![&inactive], vec![&target, &moving]],
+            vec![vec![&stationary]],
+        ],
+    );
+    let snapshot = live.step("select left before wrapping back", "move-left", None);
+    live.assert_scene(
+        &snapshot,
+        &moving,
+        &[
+            vec![vec![&inactive], vec![&moving, &target]],
+            vec![vec![&stationary]],
+        ],
+    );
+    let snapshot = live.step(
+        "wrap up to last workspace on selected side",
+        "move-up",
+        Some("pane.focused"),
+    );
+    live.assert_scene(
+        &snapshot,
+        &moving,
+        &[
+            vec![vec![&inactive], vec![&target]],
+            vec![vec![&moving, &stationary]],
+        ],
+    );
 }
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
-fn pane_termination_automatically_balances_the_surviving_tab() {
-    for (stage, focus_terminated_pane, exit_process) in [
-        ("focused API close", true, false),
-        ("non-focused API close", false, false),
-        ("focused process exit", true, true),
-    ] {
-        let mut live = LiveHerdr::start()
-            .unwrap_or_else(|error| panic!("{stage}: start isolated Herdr session: {error}"));
-        let fixture = live
-            .create_workspace(stage)
-            .unwrap_or_else(|error| panic!("{stage}: create workspace: {error}"));
-        let terminated = live
-            .split_pane(&fixture.root_pane_id, "right", focus_terminated_pane)
-            .unwrap_or_else(|error| panic!("{stage}: create terminating pane: {error}"));
-        let survivor = live
-            .split_pane(&fixture.root_pane_id, "down", false)
-            .unwrap_or_else(|error| panic!("{stage}: create lower surviving pane: {error}"));
-
-        let before = live
-            .snapshot()
-            .unwrap_or_else(|error| panic!("{stage}: capture T-layout snapshot: {error}"));
-        let surviving_terminals = [
-            terminal_id(&before, &fixture.root_pane_id),
-            terminal_id(&before, &survivor),
-        ];
-        assert_t_layout(
-            &before,
-            stage,
-            &fixture.tab_id,
-            &fixture.root_pane_id,
-            &survivor,
-            &terminated,
-        );
-        assert_eq!(
-            focused_pane_id(&before),
-            if focus_terminated_pane {
-                terminated.as_str()
-            } else {
-                fixture.root_pane_id.as_str()
-            },
-            "{stage}: fixture should focus the intended pane"
-        );
-        live.link_plugin()
-            .unwrap_or_else(|error| panic!("{stage}: link copied plugin: {error}"));
-        let existing_log_ids = live
-            .plugin_log_ids()
-            .unwrap_or_else(|error| panic!("{stage}: list logs before termination: {error}"));
-        let expected_event = if exit_process {
-            "pane.exited"
-        } else {
-            "pane.closed"
-        };
-
-        if exit_process {
-            live.exit_pane(&terminated)
-                .unwrap_or_else(|error| panic!("{stage}: exit pane process: {error}"));
-        } else {
-            live.close_pane(&terminated)
-                .unwrap_or_else(|error| panic!("{stage}: close pane through API: {error}"));
-        }
-        live.wait_for_pane_to_disappear(&terminated)
-            .unwrap_or_else(|error| panic!("{stage}: wait for terminated pane: {error}"));
-        live.wait_for_termination_hooks(&existing_log_ids, expected_event)
-            .unwrap_or_else(|error| {
-                panic!(
-                    "{stage}: missing or failed {expected_event} termination balance hook: {error}"
-                )
-            });
-        let after = live
-            .snapshot()
-            .unwrap_or_else(|error| panic!("{stage}: capture balanced snapshot: {error}"));
-
-        let survivor_ids = [fixture.root_pane_id.as_str(), survivor.as_str()];
-        assert_balanced_survivors(
-            &after,
-            stage,
-            &fixture.tab_id,
-            survivor_ids,
-            &surviving_terminals,
-        );
-        let focused_survivor = focused_pane_id(&after);
-        assert!(
-            survivor_ids.contains(&focused_survivor.as_str()),
-            "{stage}: termination should leave focus on a surviving pane, found {focused_survivor}"
-        );
-        live.run_and_wait_for_text(&focused_survivor, stage)
-            .unwrap_or_else(|error| panic!("{stage}: next input failed: {error}"));
-    }
+fn closing_focused_and_unfocused_panes_through_the_api_balances_multiple_survivors() {
+    let mut live = LiveHerdr::start().expect("start isolated Herdr session");
+    let fixture = live
+        .create_workspace("focused API close")
+        .expect("create workspace");
+    let terminated = live
+        .split_pane(&fixture.root_pane_id, "right", true)
+        .expect("terminating pane");
+    let survivor = live
+        .split_pane(&fixture.root_pane_id, "down", false)
+        .expect("lower survivor");
+    let before = live.snapshot().expect("T-layout snapshot");
+    assert_t_layout(
+        &before,
+        "before close",
+        &fixture.tab_id,
+        &fixture.root_pane_id,
+        &survivor,
+        &terminated,
+    );
+    assert_eq!(focused_pane_id(&before), terminated);
+    let terminals = [
+        terminal_id(&before, &fixture.root_pane_id),
+        terminal_id(&before, &survivor),
+    ];
+    live.link_plugin().expect("link copied plugin");
+    let after = live.terminate("focused API close", &terminated, false);
+    let focused = terminal_id(&after, &focused_pane_id(&after));
+    live.assert_scene(
+        &after,
+        &focused,
+        &[vec![terminals.iter().map(String::as_str).collect()]],
+    );
+    let before = live.step(
+        "add a third pane before unfocused close",
+        "new-pane",
+        Some("pane.focused"),
+    );
+    let focused = terminal_id(&before, &focused_pane_id(&before));
+    live.assert_scene(
+        &before,
+        &focused,
+        &[vec![vec![&terminals[0], &focused, &terminals[1]]]],
+    );
+    // Closing the unfocused leftmost pane leaves a 2:1 split. Only pane.closed
+    // can start the resize to equal columns; no focus change starts another hook.
+    let logs = live.plugin_log_ids().expect("logs before unfocused close");
+    let after = live.terminate(
+        "close unfocused left pane and equalize two survivors",
+        &fixture.root_pane_id,
+        false,
+    );
+    live.assert_scene(&after, &focused, &[vec![vec![&focused, &terminals[1]]]]);
+    assert!(
+        !live
+            .plugin_logs()
+            .expect("logs after unfocused close")
+            .iter()
+            .any(|log| log["event"] == "pane.focused"
+                && !logs.contains(log["log_id"].as_str().unwrap())),
+        "unfocused API close must balance without a pane.focused hook"
+    );
 }
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
-fn new_workspace_actions_move_one_pane_or_the_whole_tab_and_keep_focus() {
+fn moving_a_pane_or_tab_to_a_new_workspace_inserts_it_before_trailing_workspaces() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let pane_source = live
         .create_workspace("workspace-pane-source")
@@ -468,309 +519,130 @@ fn new_workspace_actions_move_one_pane_or_the_whole_tab_and_keep_focus() {
     let trailing = live
         .create_workspace("workspace-trailing")
         .expect("create trailing workspace");
-    live.link_plugin().expect("link copied plugin");
-
     live.focus_workspace(&pane_source.workspace_id)
         .expect("focus pane source workspace");
     live.focus_tab(&pane_source.tab_id)
         .expect("focus pane source tab");
-    let pane_before = live.snapshot().expect("capture pane pre-action snapshot");
-    let detached_terminal_id = terminal_id(&pane_before, &detached);
-    assert_eq!(focused_pane_id(&pane_before), detached);
+    live.link_plugin().expect("link copied plugin");
+    let before = live
+        .snapshot()
+        .expect("snapshot before inserting workspaces");
+    let stationary = terminal_id(&before, &pane_source.root_pane_id);
+    let detached = terminal_id(&before, &detached);
+    let inactive = terminal_id(&before, &tab_source.root_pane_id);
+    let left = terminal_id(&before, &moving.root_pane_id);
+    let center = terminal_id(&before, &middle);
+    let right = terminal_id(&before, &focused);
+    let trailing = terminal_id(&before, &trailing.root_pane_id);
+    let after = live.step(
+        "detach before trailing workspaces",
+        "to-new-workspace",
+        Some("pane.focused"),
+    );
+    live.assert_scene(
+        &after,
+        &detached,
+        &[
+            vec![vec![&stationary]],
+            vec![vec![&detached]],
+            vec![vec![&inactive], vec![&left, &center, &right]],
+            vec![vec![&trailing]],
+        ],
+    );
 
-    live.invoke_action("to-new-workspace")
-        .expect("invoke to-new-workspace and wait for its log");
-
-    let pane_after = live.snapshot().expect("capture pane post-action snapshot");
-    let detached_pane = pane_by_terminal_id(&pane_after, &detached_terminal_id);
-    let detached_pane_id = detached_pane["pane_id"].as_str().expect("detached pane ID");
-    let pane_workspace_id = detached_pane["workspace_id"]
-        .as_str()
-        .expect("pane workspace ID");
-    assert_ne!(pane_workspace_id, pane_source.workspace_id);
-    assert_eq!(focused_pane_id(&pane_after), detached_pane_id);
-    assert_eq!(
-        pane_ids_in_tab(&pane_after, &pane_source.tab_id),
-        BTreeSet::from([pane_source.root_pane_id.clone()])
+    let after = live.step(
+        "enter moving tab in next workspace",
+        "focus-down",
+        Some("pane.focused"),
     );
-    assert_eq!(
-        pane_ids_in_tab(&pane_after, detached_pane["tab_id"].as_str().unwrap()).len(),
-        1
+    live.assert_scene(
+        &after,
+        &center,
+        &[
+            vec![vec![&stationary]],
+            vec![vec![&detached]],
+            vec![vec![&inactive], vec![&left, &center, &right]],
+            vec![vec![&trailing]],
+        ],
     );
-    assert!(
-        workspace_number(&pane_after, &pane_source.workspace_id)
-            < workspace_number(&pane_after, pane_workspace_id)
+    let after = live.step(
+        "select right pane in moving tab",
+        "focus-right",
+        Some("pane.focused"),
     );
-    assert!(
-        workspace_number(&pane_after, pane_workspace_id)
-            < workspace_number(&pane_after, &tab_source.workspace_id)
+    live.assert_scene(
+        &after,
+        &right,
+        &[
+            vec![vec![&stationary]],
+            vec![vec![&detached]],
+            vec![vec![&inactive], vec![&left, &center, &right]],
+            vec![vec![&trailing]],
+        ],
     );
-    live.run_and_wait_for_text(detached_pane_id, "to-new-workspace")
-        .expect("send input to detached pane");
-
-    live.focus_workspace(&tab_source.workspace_id)
-        .expect("focus tab source workspace");
-    live.focus_tab(&moving.tab_id).expect("focus moving tab");
-    live.focus_right_of(&moving.root_pane_id)
-        .expect("focus middle moving pane");
-    live.focus_right_of(&middle)
-        .expect("focus right moving pane");
-    let before = live.snapshot().expect("capture pre-action snapshot");
-    let left_terminal_id = terminal_id(&before, &moving.root_pane_id);
-    let middle_terminal_id = terminal_id(&before, &middle);
-    let right_terminal_id = terminal_id(&before, &focused);
-    assert_eq!(focused_pane_id(&before), focused);
-
-    live.invoke_action("tab-to-new-workspace")
-        .expect("invoke tab-to-new-workspace and wait for its log");
-
-    let after = live.snapshot().expect("capture post-action snapshot");
-    let left = pane_by_terminal_id(&after, &left_terminal_id);
-    let middle = pane_by_terminal_id(&after, &middle_terminal_id);
-    let right = pane_by_terminal_id(&after, &right_terminal_id);
-    let created_workspace_id = left["workspace_id"].as_str().expect("created workspace ID");
-    let created_tab_id = left["tab_id"].as_str().expect("created tab ID");
-    let moved_ids: Vec<&str> = [left, middle, right]
-        .map(|pane| pane["pane_id"].as_str().expect("moved pane ID"))
-        .to_vec();
-    assert_ne!(created_workspace_id, tab_source.workspace_id);
-    for pane in [middle, right] {
-        assert_eq!(pane["workspace_id"], created_workspace_id);
-        assert_eq!(pane["tab_id"], created_tab_id);
-    }
-    assert_eq!(right["focused"], true);
-    assert_eq!(focused_pane_id(&after), moved_ids[2]);
-    assert_eq!(pane_ids_in_tab(&after, created_tab_id).len(), 3);
-    assert!(pane_ids_in_tab(&after, &moving.tab_id).is_empty());
-    assert_eq!(
-        pane_ids_in_tab(&after, &tab_source.tab_id),
-        BTreeSet::from([tab_source.root_pane_id.clone()])
+    let after = live.step(
+        "move tab before trailing workspace",
+        "tab-to-new-workspace",
+        Some("pane.focused"),
     );
-    assert_eq!(tab(&after, created_tab_id)["label"], "moving");
-    assert!(
-        workspace_number(&after, &tab_source.workspace_id)
-            < workspace_number(&after, created_workspace_id)
+    live.assert_scene(
+        &after,
+        &right,
+        &[
+            vec![vec![&stationary]],
+            vec![vec![&detached]],
+            vec![vec![&inactive]],
+            vec![vec![&left, &center, &right]],
+            vec![vec![&trailing]],
+        ],
     );
-    assert!(
-        workspace_number(&after, created_workspace_id)
-            < workspace_number(&after, &trailing.workspace_id)
-    );
-    assert_eq!(panes_in_reading_order(&after, created_tab_id), moved_ids);
-    live.run_and_wait_for_text(moved_ids[2], "tab-to-new-workspace")
-        .expect("send input to focused whole-tab pane");
+    live.assert_focused_tab_label(&after, "moving");
 }
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
-fn tab_workspace_actions_keep_the_tab_independent_on_a_round_trip() {
+fn moving_the_only_single_pane_tab_closes_its_workspace_and_stops_at_the_last_workspace() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
-    let source = live.create_workspace("source").expect("create source");
-    let moving = live
-        .create_tab(&source.workspace_id, "moving")
-        .expect("create moving tab");
-    let middle = live
-        .split_pane(&moving.root_pane_id, "right", true)
-        .expect("split middle");
-    let right = live
-        .split_pane(&middle, "right", true)
-        .expect("split right");
-    let target = live.create_workspace("target").expect("create target");
-    let target_last = live
-        .create_tab(&target.workspace_id, "target-last")
-        .expect("create last destination tab");
-    live.focus_workspace(&source.workspace_id)
-        .expect("focus source");
-    live.focus_tab(&moving.tab_id).expect("focus moving tab");
-    live.link_plugin().expect("link isolated plugin");
-    let before = live.snapshot().expect("snapshot before moving");
-    let terminals = [&moving.root_pane_id, &middle, &right].map(|id| terminal_id(&before, id));
-    let workspace_order = |snapshot: &Value| {
-        let mut workspaces: Vec<_> = snapshot["workspaces"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|workspace| {
-                (
-                    workspace["number"].as_u64().unwrap(),
-                    workspace["workspace_id"].as_str().unwrap().to_owned(),
-                )
-            })
-            .collect();
-        workspaces.sort();
-        workspaces
-    };
-    let original_order = workspace_order(&before);
-    let mut previous_tab_id = moving.tab_id.clone();
-    for (action, destination) in [
-        ("tab-to-next-workspace", &target.workspace_id),
-        ("tab-to-previous-workspace", &source.workspace_id),
-    ] {
-        let before_move = live.snapshot().expect("snapshot before action");
-        let existing_tabs: Vec<_> = before_move["tabs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|tab| tab["workspace_id"] == *destination)
-            .map(|tab| tab["tab_id"].as_str().unwrap().to_owned())
-            .collect();
-        live.invoke_action(action)
-            .expect("invoke registered tab move action");
-        let after = live.snapshot().expect("snapshot after action");
-        let panes = terminals
-            .each_ref()
-            .map(|id| pane_by_terminal_id(&after, id));
-        let moved_ids = panes.map(|pane| pane["pane_id"].as_str().unwrap());
-        let moved_tab = panes[0]["tab_id"].as_str().unwrap();
-        for pane in panes {
-            assert_eq!(pane["workspace_id"], *destination);
-            assert_eq!(pane["tab_id"], moved_tab);
-        }
-        assert_eq!(focused_pane_id(&after), moved_ids[2]);
-        assert_eq!(tab(&after, moved_tab)["label"], "moving");
-        assert_eq!(panes_in_reading_order(&after, moved_tab), moved_ids);
-        assert_eq!(pane_ids_in_tab(&after, moved_tab).len(), 3);
-        assert!(pane_ids_in_tab(&after, &previous_tab_id).is_empty());
-        let destination_tabs: Vec<_> = after["tabs"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter(|tab| tab["workspace_id"] == *destination)
-            .map(|tab| tab["tab_id"].as_str().unwrap().to_owned())
-            .collect();
-        assert_eq!(
-            destination_tabs,
-            existing_tabs
-                .into_iter()
-                .chain([moved_tab.to_owned()])
-                .collect::<Vec<_>>()
+    let target = live.create_workspace("first").expect("target workspace");
+    let source = live.create_workspace("second").expect("source workspace");
+    let before = live
+        .snapshot()
+        .expect("snapshot before labeling and moving");
+    live.begin_stage("label only tab");
+    live.run_json(["tab", "rename", &source.tab_id, "moving"])
+        .expect("label source tab");
+    live.link_plugin().expect("link copied plugin");
+    let moving = terminal_id(&before, &source.root_pane_id);
+    let stationary = terminal_id(&before, &target.root_pane_id);
+    let after = live.step(
+        "move only single-pane tab to previous workspace",
+        "tab-to-previous-workspace",
+        Some("pane.focused"),
+    );
+    live.assert_scene(&after, &moving, &[vec![vec![&stationary], vec![&moving]]]);
+    assert_eq!(after["focused_workspace_id"], target.workspace_id);
+    assert_eq!(workspace_number(&after, &target.workspace_id), 1);
+    assert_ne!(focused_pane_id(&after), source.root_pane_id);
+    live.assert_focused_tab_label(&after, "moving");
+    for field in ["tabs", "layouts"] {
+        assert!(
+            !after[field]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|tab| tab["tab_id"] == source.tab_id),
+            "{field}: source tab must be removed"
         );
-        for fixture in [&source, &target, &target_last] {
-            assert_eq!(
-                pane_ids_in_tab(&after, &fixture.tab_id),
-                BTreeSet::from([fixture.root_pane_id.clone()])
-            );
-        }
-        assert_eq!(workspace_order(&after), original_order);
-        previous_tab_id = moved_tab.to_owned();
     }
-}
-
-#[test]
-#[ignore = "requires Herdr and starts an isolated named session"]
-fn only_tab_actions_close_the_source_and_preserve_all_panes() {
-    for (action, pane_count) in [
-        ("tab-to-next-workspace", 1),
-        ("tab-to-next-workspace", 2),
-        ("tab-to-previous-workspace", 1),
-        ("tab-to-previous-workspace", 2),
-    ] {
-        let mut live = LiveHerdr::start().expect("start isolated Herdr session");
-        let first = live
-            .create_workspace("first")
-            .expect("create first workspace");
-        let created = live
-            .create_workspace("second")
-            .expect("create second workspace");
-        let (source, target) = if action == "tab-to-next-workspace" {
-            (first, created)
-        } else {
-            (created, first)
-        };
-        live.focus_workspace(&source.workspace_id)
-            .expect("focus source");
-        live.run_json(["tab", "rename", &source.tab_id, "moving"])
-            .expect("label source tab");
-        let mut original_ids = vec![source.root_pane_id.clone()];
-        if pane_count == 2 {
-            original_ids.push(
-                live.split_pane(&source.root_pane_id, "right", true)
-                    .expect("split last pane"),
-            );
-        }
-        live.link_plugin().expect("link isolated plugin");
-        let before = live.snapshot().expect("snapshot before move");
-        assert_eq!(before["workspaces"].as_array().unwrap().len(), 2);
-        assert_eq!(focused_pane_id(&before), *original_ids.last().unwrap());
-        assert_eq!(
-            workspace_number(&before, &target.workspace_id),
-            if action == "tab-to-next-workspace" {
-                2
-            } else {
-                1
-            }
+    for no_op in ["tab-to-next-workspace", "tab-to-previous-workspace"] {
+        let unchanged = live.step(no_op, no_op, None);
+        live.assert_scene(
+            &unchanged,
+            &moving,
+            &[vec![vec![&stationary], vec![&moving]]],
         );
-        let terminals: Vec<_> = original_ids
-            .iter()
-            .map(|id| terminal_id(&before, id))
-            .collect();
-        let target_terminal = terminal_id(&before, &target.root_pane_id);
-        live.invoke_action(action).expect("move only tab");
-        let after = live.snapshot().expect("snapshot after move");
-        assert_eq!(after["workspaces"].as_array().unwrap().len(), 1);
-        assert_eq!(after["workspaces"][0]["workspace_id"], target.workspace_id);
-        assert_eq!(workspace_number(&after, &target.workspace_id), 1);
-        assert!(
-            !after["tabs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|tab| tab["tab_id"] == source.tab_id)
-        );
-        assert!(
-            !after["layouts"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .any(|layout| layout["tab_id"] == source.tab_id)
-        );
-        let moved: Vec<_> = terminals
-            .iter()
-            .map(|id| pane_by_terminal_id(&after, id))
-            .collect();
-        let moved_tab = moved[0]["tab_id"].as_str().unwrap();
-        let moved_ids: Vec<_> = moved
-            .iter()
-            .map(|pane| pane["pane_id"].as_str().unwrap())
-            .collect();
-        for (pane, original_id) in moved.iter().zip(&original_ids) {
-            assert_eq!(pane["workspace_id"], target.workspace_id);
-            assert_eq!(pane["tab_id"], moved_tab);
-            assert_ne!(pane["pane_id"], *original_id);
-        }
-        assert_eq!(focused_pane_id(&after), *moved_ids.last().unwrap());
-        assert_eq!(tab(&after, moved_tab)["label"], "moving");
-        assert_eq!(panes_in_reading_order(&after, moved_tab), moved_ids);
-        assert_eq!(pane_ids_in_tab(&after, moved_tab).len(), pane_count);
-        assert_eq!(
-            after["tabs"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|tab| tab["tab_id"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            [&target.tab_id, moved_tab]
-        );
-        assert_eq!(
-            pane_ids_in_tab(&after, &target.tab_id),
-            BTreeSet::from([target.root_pane_id.clone()])
-        );
-        assert_eq!(terminal_id(&after, &target.root_pane_id), target_terminal);
-        if pane_count == 2 {
-            let layout = after["layouts"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .find(|layout| layout["tab_id"] == moved_tab)
-                .unwrap();
-            assert_eq!(layout["splits"][0]["ratio"], 0.5);
-        }
-        for no_op in ["tab-to-next-workspace", "tab-to-previous-workspace"] {
-            live.invoke_action(no_op)
-                .expect("ignore move with one workspace");
-            let unchanged = live.snapshot().expect("snapshot after ignored move");
-            for field in ["workspaces", "tabs", "layouts", "focused_pane_id"] {
-                assert_eq!(unchanged[field], after[field], "{no_op}: {field}");
-            }
+        for field in ["workspaces", "tabs", "layouts", "focused_pane_id"] {
+            assert_eq!(unchanged[field], after[field], "{no_op}: {field}");
         }
     }
 }
@@ -787,6 +659,8 @@ struct LiveHerdr {
     plugin_binary: PathBuf,
     server: Option<Child>,
     last_snapshot: Option<Value>,
+    stage: String,
+    previous_snapshot: Option<Value>,
 }
 
 struct Fixture {
@@ -830,7 +704,9 @@ impl LiveHerdr {
                 format!("create isolated directory {}: {error}", directory.display())
             })?;
         }
-        fs::write(&config_path, "onboarding = false\n")
+        // Older servers subtract UI chrome from the headless area. Keep enough
+        // width for a three-column grid on every supported version.
+        fs::write(&config_path, "onboarding = false\n[ui]\nsidebar_start_collapsed = true\nsidebar_collapsed_mode = 'hidden'\n")
             .map_err(|error| format!("write isolated Herdr config: {error}"))?;
 
         fs::copy(
@@ -856,6 +732,8 @@ impl LiveHerdr {
             plugin_binary,
             server: None,
             last_snapshot: None,
+            stage: "setup".into(),
+            previous_snapshot: None,
         };
         live.require_version()?;
         live.spawn_server()?;
@@ -1037,7 +915,7 @@ impl LiveHerdr {
     }
 
     fn run_and_wait_for_text(&self, pane_id: &str, stage: &str) -> Result<(), String> {
-        let marker = format!("termination-next-input-{}", stage.replace(' ', "-"));
+        let marker = format!("stage-next-input-{}", stage.replace(' ', "-"));
         self.run_raw(["pane", "run", pane_id, "printf", marker.as_str()])?;
         self.run_raw([
             "pane",
@@ -1053,11 +931,6 @@ impl LiveHerdr {
 
     fn focus_tab(&self, tab_id: &str) -> Result<(), String> {
         self.run_json(["tab", "focus", tab_id]).map(|_| ())
-    }
-
-    fn focus_right_of(&self, pane_id: &str) -> Result<(), String> {
-        self.run_json(["pane", "focus", "--direction", "right", "--pane", pane_id])
-            .map(|_| ())
     }
 
     fn focus_workspace(&self, workspace_id: &str) -> Result<(), String> {
@@ -1101,57 +974,57 @@ impl LiveHerdr {
         ))
     }
 
-    fn invoke_action_and_wait_for_balance(&self, action_id: &str) -> Result<(), String> {
-        let existing_log_ids = self.plugin_log_ids()?;
-        self.invoke_action(action_id)?;
-        let deadline = Instant::now() + ACTION_TIMEOUT;
-        let mut last_hooks = Vec::new();
-        let mut unchanged_polls = 0;
-
-        while Instant::now() < deadline {
-            let hooks: Vec<_> = self
-                .plugin_logs()?
-                .into_iter()
-                .filter(|log| {
-                    log["event"] == "pane.focused"
-                        && log["log_id"]
-                            .as_str()
-                            .is_some_and(|id| !existing_log_ids.contains(id))
-                })
-                .collect();
-            if hooks.iter().any(|log| log["status"] == "failed") {
-                return Err(format!("automatic balance hook failed: {hooks:?}"));
-            }
-            let all_finished = !hooks.is_empty()
-                && hooks.iter().all(|log| {
-                    log["status"] == "succeeded"
-                        && log["finished_unix_ms"].as_u64().is_some()
-                        && log["exit_code"].as_i64() == Some(0)
-                });
-            if hooks == last_hooks {
-                unchanged_polls += 1;
-            } else {
-                last_hooks = hooks;
-                unchanged_polls = 0;
-            }
-            if all_finished && unchanged_polls >= 2 {
-                return Ok(());
-            }
-            std::thread::sleep(POLL_INTERVAL);
-        }
-        Err(format!(
-            "automatic balance after {action_id} did not settle within {ACTION_TIMEOUT:?}; last hooks: {last_hooks:?}"
-        ))
+    fn begin_stage(&mut self, stage: &str) {
+        self.stage = stage.into();
+        self.previous_snapshot = self.last_snapshot.clone();
     }
 
-    fn wait_for_termination_hooks(
+    /// Require the event promised by this stage. Moving a pane within a workspace
+    /// can retain its focused ID and emit no focus event, as can swaps and no-ops.
+    fn step(&mut self, stage: &str, action: &str, required_event: Option<&str>) -> Value {
+        self.begin_stage(stage);
+        let logs = self.plugin_log_ids().expect("logs before action");
+        self.invoke_action(action)
+            .unwrap_or_else(|error| panic!("{stage}: {error}"));
+        self.wait_for_hooks(&logs, required_event)
+            .unwrap_or_else(|error| panic!("{stage}: {error}"));
+        self.snapshot()
+            .unwrap_or_else(|error| panic!("{stage}: {error}"))
+    }
+
+    fn terminate(&mut self, stage: &str, pane_id: &str, exit_process: bool) -> Value {
+        self.begin_stage(stage);
+        let logs = self.plugin_log_ids().expect("logs before termination");
+        let result = if exit_process {
+            self.exit_pane(pane_id)
+        } else {
+            self.close_pane(pane_id)
+        };
+        result.unwrap_or_else(|error| panic!("{stage}: {error}"));
+        self.wait_for_pane_to_disappear(pane_id)
+            .unwrap_or_else(|error| panic!("{stage}: {error}"));
+        self.wait_for_hooks(
+            &logs,
+            Some(if exit_process {
+                "pane.exited"
+            } else {
+                "pane.closed"
+            }),
+        )
+        .unwrap_or_else(|error| panic!("{stage}: {error}"));
+        self.snapshot()
+            .unwrap_or_else(|error| panic!("{stage}: {error}"))
+    }
+
+    /// A quiet, completed hook set also permits actions which emit no focus event.
+    fn wait_for_hooks(
         &self,
-        existing_log_ids: &BTreeSet<String>,
-        expected_event: &str,
+        existing: &BTreeSet<String>,
+        required_event: Option<&str>,
     ) -> Result<(), String> {
         let deadline = Instant::now() + ACTION_TIMEOUT;
-        let mut last_hooks = Vec::new();
-
+        let mut previous = Vec::new();
+        let mut quiet_polls = 0;
         while Instant::now() < deadline {
             let hooks: Vec<_> = self
                 .plugin_logs()?
@@ -1162,32 +1035,122 @@ impl LiveHerdr {
                         Some("pane.focused" | "pane.closed" | "pane.exited")
                     ) && log["log_id"]
                         .as_str()
-                        .is_some_and(|id| !existing_log_ids.contains(id))
+                        .is_some_and(|id| !existing.contains(id))
                 })
                 .collect();
             if hooks.iter().any(|log| log["status"] == "failed") {
-                return Err(format!("automatic balance hook failed: {hooks:?}"));
+                return Err(format!("balance hook failed: {hooks:?}"));
             }
-            let expected_finished = hooks.iter().any(|log| {
-                log["event"] == expected_event
-                    && log["status"] == "succeeded"
-                    && log["finished_unix_ms"].as_u64().is_some()
-                    && log["exit_code"].as_i64() == Some(0)
-            });
-            let all_observed_finished = hooks.iter().all(|log| {
+            let complete = hooks.iter().all(|log| {
                 log["status"] == "succeeded"
                     && log["finished_unix_ms"].as_u64().is_some()
-                    && log["exit_code"].as_i64() == Some(0)
-            });
-            if expected_finished && all_observed_finished {
+                    && log["exit_code"] == 0
+            }) && required_event
+                .is_none_or(|event| hooks.iter().any(|log| log["event"] == event));
+            quiet_polls = if hooks == previous {
+                quiet_polls + 1
+            } else {
+                0
+            };
+            if complete && quiet_polls >= 2 {
                 return Ok(());
             }
-            last_hooks = hooks;
+            previous = hooks;
             std::thread::sleep(POLL_INTERVAL);
         }
         Err(format!(
-            "{expected_event} hook did not finish within {ACTION_TIMEOUT:?}; last related hooks: {last_hooks:?}"
+            "hooks did not settle within {ACTION_TIMEOUT:?}: {previous:?}"
         ))
+    }
+
+    /// Expected workspaces, tabs, then terminal IDs in reading order. Background
+    /// tabs may defer balancing; the entered tab must already have an aligned grid.
+    /// Sends a marker command to the focused pane and waits for its output.
+    fn assert_scene(&self, snapshot: &Value, focused_terminal: &str, expected: &[Vec<Vec<&str>>]) {
+        let stage = &self.stage;
+        let mut workspaces: Vec<_> = snapshot["workspaces"].as_array().unwrap().iter().collect();
+        workspaces.sort_by_key(|workspace| workspace["number"].as_u64().unwrap());
+        let actual: Vec<Vec<Vec<String>>> = workspaces
+            .iter()
+            .map(|workspace| {
+                snapshot["tabs"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|tab| tab["workspace_id"] == workspace["workspace_id"])
+                    .map(|tab| {
+                        panes_in_reading_order(snapshot, tab["tab_id"].as_str().unwrap())
+                            .into_iter()
+                            .map(|id| terminal_id(snapshot, id))
+                            .collect()
+                    })
+                    .collect()
+            })
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "{stage}: workspace/tab/pane count and reading order"
+        );
+        assert_eq!(
+            snapshot["panes"].as_array().unwrap().len(),
+            expected.iter().flatten().map(Vec::len).sum::<usize>(),
+            "{stage}: no stranded panes"
+        );
+        let focused = pane_by_terminal_id(snapshot, focused_terminal);
+        assert_eq!(
+            snapshot["focused_pane_id"], focused["pane_id"],
+            "{stage}: focused pane"
+        );
+        assert_eq!(
+            snapshot["focused_tab_id"], focused["tab_id"],
+            "{stage}: focused tab"
+        );
+        assert_eq!(
+            snapshot["focused_workspace_id"], focused["workspace_id"],
+            "{stage}: focused workspace"
+        );
+        assert_eq!(focused["focused"], true, "{stage}: focused terminal");
+        let tab_id = focused["tab_id"].as_str().unwrap();
+        let layout = tab_layout(snapshot, tab_id);
+        let order = panes_in_reading_order(snapshot, tab_id);
+        // Explicit expectations for the one-to-six-pane, 120-column fixture.
+        let columns = match order.len() {
+            1 => 1,
+            2 | 4 => 2,
+            3 | 5 | 6 => 3,
+            _ => panic!("{stage}: unexpected grid size"),
+        };
+        let rows = order.len().div_ceil(columns);
+        let area = &layout["area"];
+        let boundary = |axis: &str, extent: &str, index: usize, slots: usize| {
+            area[axis].as_u64().unwrap()
+                + (area[extent].as_f64().unwrap() * index as f64 / slots as f64).round() as u64
+        };
+        for (row, panes) in order.chunks(columns).enumerate() {
+            for (column, id) in panes.iter().enumerate() {
+                let rect = pane_rect(snapshot, tab_id, id);
+                let x = boundary("x", "width", column, panes.len());
+                let y = boundary("y", "height", row, rows);
+                assert_eq!(
+                    rect,
+                    &serde_json::json!({"x": x, "y": y,
+                    "width": boundary("x", "width", column + 1, panes.len()) - x,
+                    "height": boundary("y", "height", row + 1, rows) - y}),
+                    "{stage}: aligned grid at row {row}, column {column}"
+                );
+            }
+        }
+        self.run_and_wait_for_text(focused["pane_id"].as_str().unwrap(), stage)
+            .unwrap_or_else(|error| panic!("{stage}: next input: {error}"));
+    }
+
+    fn assert_focused_tab_label(&self, snapshot: &Value, expected: &str) {
+        assert_eq!(
+            tab(snapshot, snapshot["focused_tab_id"].as_str().unwrap())["label"],
+            expected,
+            "{}: focused tab label",
+            self.stage
+        );
     }
 
     fn plugin_log_ids(&self) -> Result<BTreeSet<String>, String> {
@@ -1294,6 +1257,10 @@ impl LiveHerdr {
 
         if std::thread::panicking() {
             eprintln!("live Herdr session: {}", self.session);
+            eprintln!("failed stage: {}", self.stage);
+            if let Some(snapshot) = &self.previous_snapshot {
+                eprintln!("snapshot before stage: {snapshot}");
+            }
             if let Some(snapshot) = &self.last_snapshot {
                 eprintln!("last live Herdr snapshot: {snapshot}");
             }
@@ -1325,91 +1292,6 @@ impl Drop for LiveHerdr {
     }
 }
 
-fn assert_vertical_move(
-    live: &mut LiveHerdr,
-    stage: &str,
-    action_id: &str,
-    moving_terminal_id: &str,
-    route: (&Fixture, &Fixture),
-    moving_first: bool,
-    unchanged_tab: (&str, &BTreeSet<String>),
-) {
-    let (source, destination) = route;
-    live.invoke_action_and_wait_for_balance(action_id)
-        .unwrap_or_else(|error| {
-            panic!("{stage}: {action_id} and automatic balancing failed: {error}")
-        });
-    let snapshot = live
-        .snapshot()
-        .unwrap_or_else(|error| panic!("{stage}: capture snapshot after {action_id}: {error}"));
-
-    assert_two_pane_position(
-        &snapshot,
-        stage,
-        action_id,
-        moving_terminal_id,
-        destination,
-        moving_first,
-    );
-    assert_eq!(
-        pane_ids_in_tab(&snapshot, &source.tab_id),
-        BTreeSet::from([source.root_pane_id.clone()]),
-        "{stage}: {action_id} should leave only the stationary pane in the source tab"
-    );
-    assert_eq!(
-        pane_ids_in_tab(&snapshot, unchanged_tab.0),
-        *unchanged_tab.1,
-        "{stage}: {action_id} should preserve panes in the unaffected tab"
-    );
-}
-
-fn assert_two_pane_position(
-    snapshot: &Value,
-    stage: &str,
-    action_id: &str,
-    moving_terminal_id: &str,
-    destination: &Fixture,
-    moving_first: bool,
-) {
-    let moved = pane_by_terminal_id(snapshot, moving_terminal_id);
-    let moved_pane_id = moved["pane_id"].as_str().expect("moved pane ID");
-    let stationary_pane_id = destination.root_pane_id.as_str();
-    let expected_order = if moving_first {
-        [moved_pane_id, stationary_pane_id]
-    } else {
-        [stationary_pane_id, moved_pane_id]
-    };
-    let expected_side = if moving_first { "left" } else { "right" };
-
-    assert_eq!(
-        moved["workspace_id"], destination.workspace_id,
-        "{stage}: {action_id} should reach the destination workspace"
-    );
-    assert_eq!(
-        moved["tab_id"], destination.tab_id,
-        "{stage}: {action_id} should reach the destination tab"
-    );
-    assert_eq!(
-        panes_in_reading_order(snapshot, &destination.tab_id),
-        expected_order,
-        "{stage}: {action_id} should place the moving pane on the {expected_side}"
-    );
-    assert_eq!(
-        pane_ids_in_tab(snapshot, &destination.tab_id),
-        BTreeSet::from([destination.root_pane_id.clone(), moved_pane_id.to_owned()]),
-        "{stage}: {action_id} should preserve the destination pane set"
-    );
-    assert_eq!(
-        moved["focused"], true,
-        "{stage}: {action_id} should focus the moving pane"
-    );
-    assert_eq!(
-        focused_pane_id(snapshot),
-        moved_pane_id,
-        "{stage}: {action_id} should keep server focus on the moving pane"
-    );
-}
-
 fn assert_t_layout(
     snapshot: &Value,
     stage: &str,
@@ -1432,56 +1314,6 @@ fn assert_t_layout(
     assert!(
         upper["x"].as_u64().unwrap() < right["x"].as_u64().unwrap(),
         "{stage}: terminating pane should occupy the right half"
-    );
-}
-
-fn assert_balanced_survivors(
-    snapshot: &Value,
-    stage: &str,
-    tab_id: &str,
-    survivor_ids: [&str; 2],
-    terminal_ids: &[String; 2],
-) {
-    assert_eq!(
-        pane_ids_in_tab(snapshot, tab_id),
-        survivor_ids.iter().map(|id| (*id).to_owned()).collect(),
-        "{stage}: termination should preserve the surviving pane IDs"
-    );
-    assert_eq!(
-        terminal_ids
-            .iter()
-            .map(|id| {
-                pane_by_terminal_id(snapshot, id)["pane_id"]
-                    .as_str()
-                    .expect("surviving pane ID")
-            })
-            .collect::<BTreeSet<_>>(),
-        survivor_ids.into_iter().collect(),
-        "{stage}: termination should preserve the surviving terminals"
-    );
-    let layout = tab_layout(snapshot, tab_id);
-    assert_eq!(
-        layout["splits"].as_array().map(Vec::len),
-        Some(1),
-        "{stage}: termination should leave one split for two survivors"
-    );
-    assert_eq!(
-        layout["splits"][0]["direction"], "right",
-        "{stage}: survivors remained vertical instead of a horizontal grid"
-    );
-    assert_eq!(
-        layout["splits"][0]["ratio"], 0.5,
-        "{stage}: horizontal grid should be 50:50"
-    );
-    let first = pane_rect(snapshot, tab_id, survivor_ids[0]);
-    let second = pane_rect(snapshot, tab_id, survivor_ids[1]);
-    assert_eq!(
-        first["y"], second["y"],
-        "{stage}: survivors should share a row"
-    );
-    assert_eq!(
-        first["width"], second["width"],
-        "{stage}: survivors should occupy equal columns"
     );
 }
 
@@ -1572,21 +1404,6 @@ fn pane_by_terminal_id<'a>(snapshot: &'a Value, terminal_id: &str) -> &'a Value 
         .unwrap_or_else(|| panic!("terminal {terminal_id} missing from snapshot: {snapshot}"))
 }
 
-fn pane_ids_in_tab(snapshot: &Value, tab_id: &str) -> BTreeSet<String> {
-    snapshot["panes"]
-        .as_array()
-        .expect("snapshot pane list")
-        .iter()
-        .filter(|pane| pane["tab_id"] == tab_id)
-        .map(|pane| {
-            pane["pane_id"]
-                .as_str()
-                .expect("snapshot pane ID")
-                .to_string()
-        })
-        .collect()
-}
-
 fn terminal_id(snapshot: &Value, pane_id: &str) -> String {
     pane(snapshot, pane_id)["terminal_id"]
         .as_str()
@@ -1633,18 +1450,6 @@ fn panes_in_reading_order<'a>(snapshot: &'a Value, tab_id: &str) -> Vec<&'a str>
         .collect();
     panes.sort_unstable();
     panes.into_iter().map(|(_, _, pane_id)| pane_id).collect()
-}
-
-fn pane_x(snapshot: &Value, tab_id: &str, pane_id: &str) -> u64 {
-    snapshot["layouts"]
-        .as_array()
-        .expect("snapshot layout list")
-        .iter()
-        .find(|layout| layout["tab_id"] == tab_id)
-        .and_then(|layout| layout["panes"].as_array())
-        .and_then(|panes| panes.iter().find(|pane| pane["pane_id"] == pane_id))
-        .and_then(|pane| pane["rect"]["x"].as_u64())
-        .unwrap_or_else(|| panic!("pane {pane_id} layout missing from snapshot: {snapshot}"))
 }
 
 fn print_command_output(label: &str, output: std::io::Result<Output>) {
