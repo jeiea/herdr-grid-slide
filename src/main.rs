@@ -418,7 +418,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
         [operation] => match operation.as_str() {
             "new-tab" => Ok(Command::CreateTab),
             "new-workspace" => Ok(Command::CreateWorkspace),
-            "split-pane" | "new-pane" => Ok(Command::CreatePane),
+            "new-pane" => Ok(Command::CreatePane),
             "to-new-tab" => Ok(Command::MoveToNewTab),
             "to-new-workspace" => Ok(Command::MoveToNewWorkspace),
             "tab-to-new-workspace" => Ok(Command::MoveTabWorkspace(None)),
@@ -472,7 +472,7 @@ fn parse_pane_direction(direction: &str) -> Result<PaneDirection> {
 }
 
 fn usage() -> String {
-    "usage: herdr-grid-slide <workspace|tab> <next|previous> | move-workspace <next|previous> | move-tab-workspace <next|previous> | <focus|move> <direction> | new-tab | new-workspace | to-new-tab | to-new-workspace | tab-to-new-workspace | split-pane | new-pane | balance | on-pane-focused".into()
+    "usage: herdr-grid-slide <workspace|tab> <next|previous> | move-workspace <next|previous> | move-tab-workspace <next|previous> | <focus|move> <direction> | new-tab | new-workspace | to-new-tab | to-new-workspace | tab-to-new-workspace | new-pane | balance | on-pane-focused".into()
 }
 
 fn read_context(needs_state_dir: bool) -> Result<Context> {

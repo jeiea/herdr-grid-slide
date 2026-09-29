@@ -140,12 +140,6 @@ contexts = ["pane"]
 command = ["./bin/herdr-grid-slide", "move", "right"]
 
 [[actions]]
-id = "split-pane"
-title = "Split pane"
-contexts = ["pane"]
-command = ["./bin/herdr-grid-slide", "split-pane"]
-
-[[actions]]
 id = "new-pane"
 title = "Create pane"
 contexts = ["pane"]

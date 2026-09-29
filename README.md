@@ -12,7 +12,7 @@ Every action is exposed as `jeiea.grid-slide.<action>`.
 | Move the focused pane the same way, crossing tab or workspace edges | `move-left`, `move-down`, `move-up`, `move-right` |
 | Send the focused pane to an adjacent or new tab/workspace | `to-previous-tab`, `to-next-tab`, `to-previous-workspace`, `to-next-workspace`, `to-new-tab`, `to-new-workspace` |
 | Send the whole current tab to an adjacent or new workspace | `tab-to-previous-workspace`, `tab-to-next-workspace`, `tab-to-new-workspace` |
-| Create a pane, a tab to the right, or a workspace after the current one | `new-pane` (alias `split-pane`), `new-tab`, `new-workspace` |
+| Create a pane, a tab to the right, or a workspace after the current one | `new-pane`, `new-tab`, `new-workspace` |
 | Reorder the current workspace | `move-workspace-previous`, `move-workspace-next` |
 | Rearrange a tab's panes into an even grid in reading order; also runs automatically | `balance` |
 

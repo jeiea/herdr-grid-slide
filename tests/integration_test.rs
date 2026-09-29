@@ -2608,7 +2608,21 @@ fn reports_the_herdr_error_that_rejected_an_action() {
 }
 
 #[test]
-fn split_and_new_pane_aliases_only_split_in_the_existing_direction() {
+fn rejects_the_removed_pane_creation_alias() {
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-grid-slide"))
+        .arg("split-pane")
+        .env_clear()
+        .output()
+        .unwrap();
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.starts_with("usage:"), "{stderr}");
+    assert!(!stderr.contains("split-pane"));
+}
+
+#[test]
+fn new_pane_only_splits_in_the_existing_direction() {
     // The focused pane is far taller than wide, but every split in the tab runs
     // rightwards, so the new pane joins that row instead of starting a column.
     let herdr = FakeHerdr::new(tab_snapshot(vec![
@@ -2621,23 +2635,21 @@ fn split_and_new_pane_aliases_only_split_in_the_existing_direction() {
     )
     .with_replies("pane.split", [split_reply("pane-new")]);
 
-    for action in ["split-pane", "new-pane"] {
-        let run = herdr.run("workspace-1", "tab-main", "pane-a", &[action]);
+    let run = run_new_pane(&herdr, "pane-a");
 
-        run.assert_success();
-        assert_eq!(
-            run.requests,
-            [
-                snapshot_call(),
-                export_call(),
-                split_call("pane-a", "right"),
-            ]
-        );
-    }
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            split_call("pane-a", "right"),
+        ]
+    );
 }
 
 #[test]
-fn split_pane_splits_a_wide_pane_sideways_when_directions_are_mixed() {
+fn new_pane_splits_a_wide_pane_sideways_when_directions_are_mixed() {
     let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 100, 40),
         pane("pane-b", 100, 0, 100, 40),
@@ -2653,7 +2665,7 @@ fn split_pane_splits_a_wide_pane_sideways_when_directions_are_mixed() {
     )
     .with_replies("pane.split", [split_reply("pane-new")]);
 
-    let run = run_split_pane(&herdr, "pane-a");
+    let run = run_new_pane(&herdr, "pane-a");
 
     run.assert_success();
     assert_eq!(
@@ -2667,12 +2679,12 @@ fn split_pane_splits_a_wide_pane_sideways_when_directions_are_mixed() {
 }
 
 #[test]
-fn split_pane_splits_the_lone_pane_of_a_tab_by_its_shape() {
+fn new_pane_splits_the_lone_pane_of_a_tab_by_its_shape() {
     let herdr = FakeHerdr::new(tab_snapshot(vec![pane("pane-a", 0, 0, 100, 30)]))
         .with_replies("layout.export", [export_reply(leaf("pane-a"))])
         .with_replies("pane.split", [split_reply("pane-new")]);
 
-    let run = run_split_pane(&herdr, "pane-a");
+    let run = run_new_pane(&herdr, "pane-a");
 
     run.assert_success();
     assert_eq!(
@@ -2686,14 +2698,14 @@ fn split_pane_splits_the_lone_pane_of_a_tab_by_its_shape() {
 }
 
 #[test]
-fn split_pane_splits_downward_on_the_two_to_one_boundary() {
+fn new_pane_splits_downward_on_the_two_to_one_boundary() {
     // Cells are about twice as tall as wide, so a pane only counts as wide once
     // its width passes twice its height. The boundary itself splits downwards.
     let herdr = FakeHerdr::new(tab_snapshot(vec![pane("pane-a", 0, 0, 80, 40)]))
         .with_replies("layout.export", [export_reply(leaf("pane-a"))])
         .with_replies("pane.split", [split_reply("pane-new")]);
 
-    let run = run_split_pane(&herdr, "pane-a");
+    let run = run_new_pane(&herdr, "pane-a");
 
     run.assert_success();
     assert_eq!(
@@ -2703,7 +2715,7 @@ fn split_pane_splits_downward_on_the_two_to_one_boundary() {
 }
 
 #[test]
-fn split_pane_stops_before_splitting_a_zoomed_tab() {
+fn new_pane_stops_before_splitting_a_zoomed_tab() {
     let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 100, 40),
         pane("pane-b", 100, 0, 100, 40),
@@ -2717,7 +2729,7 @@ fn split_pane_stops_before_splitting_a_zoomed_tab() {
         ))],
     );
 
-    let run = run_split_pane(&herdr, "pane-a");
+    let run = run_new_pane(&herdr, "pane-a");
 
     assert_eq!(
         run.assert_failure(),
@@ -2727,7 +2739,7 @@ fn split_pane_stops_before_splitting_a_zoomed_tab() {
 }
 
 #[test]
-fn split_pane_stops_before_splitting_when_snapshot_and_layout_disagree() {
+fn new_pane_stops_before_splitting_when_snapshot_and_layout_disagree() {
     let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 100, 40),
         pane("pane-b", 100, 0, 100, 40),
@@ -2741,7 +2753,7 @@ fn split_pane_stops_before_splitting_when_snapshot_and_layout_disagree() {
         ))],
     );
 
-    let run = run_split_pane(&herdr, "pane-a");
+    let run = run_new_pane(&herdr, "pane-a");
 
     assert_eq!(
         run.assert_failure(),
@@ -4786,10 +4798,10 @@ fn pane_layout(tab_id: &str, prefix: &str) -> Value {
     )
 }
 
-/// Every `split-pane` scenario runs the same command against the same tab, so only
+/// Every `new-pane` scenario runs the same command against the same tab, so only
 /// the tree and the focused pane change between them.
-fn run_split_pane(herdr: &FakeHerdr, pane_id: &str) -> Run {
-    herdr.run("workspace-1", "tab-main", pane_id, &["split-pane"])
+fn run_new_pane(herdr: &FakeHerdr, pane_id: &str) -> Run {
+    herdr.run("workspace-1", "tab-main", pane_id, &["new-pane"])
 }
 
 fn run_on_pane_focused(herdr: &FakeHerdr, tab_id: &str, pane_id: &str) -> Run {
