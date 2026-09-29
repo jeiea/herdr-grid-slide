@@ -35,19 +35,25 @@ jobs:
   macos:
     name: macOS integration
     runs-on: macos-15
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Install Rust 1.97.1
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal
-          rustup default 1.97.1
+      - name: Install mise and configured Rust
+        uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          version: 2026.9.12
+          install_args: rust
       - name: Test installer
         run: sh tests/install_test.sh
       - name: Run integration tests
         run: cargo test --locked --test integration_test
+      - name: Run live Herdr 0.8.0 tests
+        env:
+          MISE_AUTO_INSTALL: "false"
+        run: mise run test-herdr-0.8.0
 
   windows:
     name: Windows x64 integration

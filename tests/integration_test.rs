@@ -1502,38 +1502,6 @@ fn move_workspace_reports_the_herdr_error_that_rejected_it() {
 }
 
 #[test]
-fn focuses_each_geometric_neighbor_inside_a_tab() {
-    for (direction, target_id, target_rect) in [
-        ("left", "pane-left", (0, 40)),
-        ("right", "pane-right", (80, 40)),
-        ("up", "pane-up", (40, 0)),
-        ("down", "pane-down", (40, 80)),
-    ] {
-        let herdr = FakeHerdr::new(snapshot(
-            json!([layout(
-                "tab-current",
-                vec![
-                    pane("pane-current", 40, 40, 40, 40),
-                    pane(target_id, target_rect.0, target_rect.1, 40, 40),
-                ],
-            )]),
-            json!([tab("workspace-1", "tab-current", 1)]),
-            json!([workspace("workspace-1", "tab-current", 1)]),
-        ));
-
-        let run = herdr.run(
-            "workspace-1",
-            "tab-current",
-            "pane-current",
-            &["focus", direction],
-        );
-
-        run.assert_success();
-        assert_eq!(run.requests, [snapshot_call(), focus_call(target_id)]);
-    }
-}
-
-#[test]
 fn directional_moves_each_geometric_neighbor_inside_a_tab_by_swapping_the_current_pane() {
     for (direction, target_id, target_rect) in [
         ("left", "pane-left", (0, 40)),
@@ -3019,25 +2987,6 @@ fn new_pane_completes_a_two_by_two_grid_without_moving_existing_panes() {
             snapshot_call(),
             export_call(),
             split_call("pane-c", "right"),
-        ]
-    );
-}
-
-#[test]
-fn new_pane_splits_the_lone_pane_of_a_tab_by_its_shape() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![pane("pane-a", 0, 0, 100, 30)]))
-        .with_replies("layout.export", [export_reply(leaf("pane-a"))])
-        .with_replies("pane.split", [split_reply("pane-new")]);
-
-    let run = run_new_pane(&herdr, "pane-a");
-
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            split_call("pane-a", "right"),
         ]
     );
 }

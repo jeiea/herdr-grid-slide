@@ -1,8 +1,8 @@
 # Before dispatching from the default branch:
 # 1. `mise run bump -- <MAJOR.MINOR.PATCH>` and `mise run check`; CI must pass on
 #    Linux, macOS, and Windows x64.
-# 2. `mise run test-herdr-0.8.0` (macOS arm64), then `mise run live-herdr` with
-#    Herdr 0.8.2 and with `HERDR_TEST_VERSION='herdr 0.9.0'`.
+# 2. `mise run live-herdr` with Herdr 0.8.2 and with
+#    `HERDR_TEST_VERSION='herdr 0.9.0'`.
 # 3. Run the manual connected-client checks described in tests/live_herdr_test.rs.
 # Never create the tag by hand. If cancellation or an API failure skips the
 # cleanup job, inspect with `gh release view v<version> --json isDraft,assets`
