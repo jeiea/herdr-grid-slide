@@ -2,7 +2,7 @@ id = "jeiea.grid-slide"
 name = "Grid Slide"
 version = "0.1.0"
 min_herdr_version = "0.8.0"
-description = "Move tabs, panes or focus across tabs and workspaces, create tabs and workspaces, reorder workspaces, add panes and balance tab layouts"
+description = "Move focus, panes and tabs across Herdr tabs and workspaces, with automatic grid balancing"
 platforms = ["macos", "linux", "windows"]
 
 [[build]]
