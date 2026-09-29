@@ -318,6 +318,7 @@ struct GridRow<'a> {
 /// The grid a tab is being balanced into: its panes in reading order and how many of
 /// them belong on each row.
 struct GridPlan<'a> {
+    bounds: Bounds,
     focus_policy: BalanceFocusPolicy,
     focus_pane_id: &'a str,
     order: Vec<&'a str>,
@@ -960,7 +961,7 @@ fn move_directionally(
     Ok(())
 }
 
-/// Splits the focused pane along the direction the tab already grows in.
+/// Grows the standard grid with one split when possible, otherwise splits the focused pane.
 fn create_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
     let pane = prepare_pane_action(context, client)?;
     request_pane_split(client, &pane.pane_id, pane.split_direction)?;
@@ -985,6 +986,13 @@ fn prepare_pane_action(context: &Context, client: &mut SocketClient) -> Result<P
         return Err(format!(
             "{tab_id} is zoomed; unzoom it before adding a pane"
         ));
+    }
+    let rows = grid_row_sizes(
+        snapshot_layout.panes.len() + 1,
+        layout_bounds(snapshot_layout)?,
+    )?;
+    if let Ok(Some(action)) = single_grid_split(&layout.root, &rows) {
+        return Ok(action);
     }
     Ok(PaneAction {
         pane_id: navigation.pane_id.to_owned(),
@@ -1173,10 +1181,12 @@ fn balance_exported_layout(
     if order.len() < 2 {
         return Ok(());
     }
+    let bounds = layout_bounds(snapshot_layout)?;
     let plan = GridPlan {
+        bounds,
         focus_policy,
         focus_pane_id,
-        row_sizes: grid_row_sizes(order.len(), layout_bounds(snapshot_layout)?)?,
+        row_sizes: grid_row_sizes(order.len(), bounds)?,
         order,
         tab_id,
         workspace_id,
@@ -1207,7 +1217,7 @@ fn sort_grid(
             return Err(with_focus_restored(client, plan, index > 0, error));
         }
     }
-    for (path, ratio) in grid_ratios(root, grid) {
+    for (path, ratio) in grid_ratios(root, grid, plan.bounds) {
         let resize = client.request(
             "layout.set_split_ratio",
             json!({"tab_id": plan.tab_id, "path": path, "ratio": ratio}),
@@ -1322,7 +1332,7 @@ fn settle_rebuilt_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()>
                 plan.tab_id
             )
         })?;
-    for (path, ratio) in grid_ratios(&layout.root, &grid) {
+    for (path, ratio) in grid_ratios(&layout.root, &grid, plan.bounds) {
         client
             .request(
                 "layout.set_split_ratio",
@@ -1914,6 +1924,64 @@ fn holds_the_same_panes(layout: &TabLayout, root: &LayoutNode) -> bool {
     snapshot_ids == layout_ids
 }
 
+/// Find the one leaf whose split would produce the same shape as join_evenly.
+/// A mismatch needing moves is left to the existing balance path; never rebuild
+/// just to normalize nesting. Pane order is preserved by inserting after that leaf.
+fn single_grid_split(
+    node: &LayoutNode,
+    rows: &[usize],
+) -> std::result::Result<Option<PaneAction>, ()> {
+    if rows == [1] {
+        return match node {
+            LayoutNode::Pane { .. } => Ok(None),
+            LayoutNode::Split { .. } => Err(()),
+        };
+    }
+    let direction = if rows.len() > 1 {
+        SplitDirection::Down
+    } else {
+        SplitDirection::Right
+    };
+    if let LayoutNode::Pane { pane_id } = node {
+        return if rows.iter().sum::<usize>() == 2 {
+            Ok(Some(PaneAction {
+                pane_id: pane_id.clone(),
+                split_direction: direction,
+            }))
+        } else {
+            Err(())
+        };
+    }
+    let LayoutNode::Split {
+        direction: actual,
+        first,
+        second,
+    } = node
+    else {
+        unreachable!()
+    };
+    if *actual != direction {
+        return Err(());
+    }
+    let (left, right) = if rows.len() > 1 {
+        let middle = rows.len().div_ceil(2);
+        (
+            single_grid_split(first, &rows[..middle])?,
+            single_grid_split(second, &rows[middle..])?,
+        )
+    } else {
+        let middle = rows[0].div_ceil(2);
+        (
+            single_grid_split(first, &[middle])?,
+            single_grid_split(second, &[rows[0] - middle])?,
+        )
+    };
+    match (left, right) {
+        (None, action) | (action, None) => Ok(action),
+        (Some(_), Some(_)) => Err(()),
+    }
+}
+
 fn split_direction(root: &LayoutNode, pane: &LayoutPane) -> SplitDirection {
     if let Some(direction) = uniform_direction(root) {
         return direction;
@@ -2009,16 +2077,31 @@ fn read_grid(root: &LayoutNode) -> Option<Vec<GridRow<'_>>> {
         .collect()
 }
 
-/// Ratios for the whole grid: the rows share the tab evenly and the panes of a row
-/// share that row evenly, closest to the root first.
-fn grid_ratios(root: &LayoutNode, grid: &[GridRow]) -> Vec<(Vec<bool>, f64)> {
-    ratio_updates(root, SplitDirection::Down, Vec::new())
-        .into_iter()
-        .chain(
-            grid.iter()
-                .flat_map(|row| ratio_updates(row.node, SplitDirection::Right, row.path.clone())),
+/// Compute shared cell boundaries before deriving ratios, so differently nested
+/// rows round to the same columns. Herdr rounds f32 extent * ratio, with no cell
+/// reserved between children; integer targets stay clear of half-cell thresholds.
+fn grid_ratios(root: &LayoutNode, grid: &[GridRow], bounds: Bounds) -> Vec<(Vec<bool>, f64)> {
+    let boundaries = |extent: f64, count: usize| {
+        (0..=count)
+            .map(|index| (extent * index as f64 / count as f64).round())
+            .collect::<Vec<_>>()
+    };
+    ratio_updates(
+        root,
+        SplitDirection::Down,
+        Vec::new(),
+        &boundaries(bounds.height, grid.len()),
+    )
+    .into_iter()
+    .chain(grid.iter().flat_map(|row| {
+        ratio_updates(
+            row.node,
+            SplitDirection::Right,
+            row.path.clone(),
+            &boundaries(bounds.width, row.panes.len()),
         )
-        .collect()
+    }))
+    .collect()
 }
 
 /// The moves that draw the target grid, each one attaching a pane to a pane already
@@ -2079,6 +2162,7 @@ fn ratio_updates(
     node: &LayoutNode,
     direction: SplitDirection,
     path: Vec<bool>,
+    boundaries: &[f64],
 ) -> Vec<(Vec<bool>, f64)> {
     let LayoutNode::Split {
         direction: node_direction,
@@ -2091,11 +2175,27 @@ fn ratio_updates(
     if *node_direction != direction {
         return Vec::new();
     }
-    let ratio = slot_count(first, direction) as f64 / slot_count(node, direction) as f64;
+    let middle = slot_count(first, direction);
+    let extent = boundaries[boundaries.len() - 1] - boundaries[0];
+    let ratio = if extent == 0.0 {
+        middle as f64 / (boundaries.len() - 1) as f64
+    } else {
+        (boundaries[middle] - boundaries[0]) / extent
+    };
     [(path.clone(), ratio)]
         .into_iter()
-        .chain(ratio_updates(first, direction, child_path(&path, false)))
-        .chain(ratio_updates(second, direction, child_path(&path, true)))
+        .chain(ratio_updates(
+            first,
+            direction,
+            child_path(&path, false),
+            &boundaries[..=middle],
+        ))
+        .chain(ratio_updates(
+            second,
+            direction,
+            child_path(&path, true),
+            &boundaries[middle..],
+        ))
         .collect()
 }
 
@@ -2379,6 +2479,58 @@ mod tests {
     use super::{
         Bounds, LayoutPane, Rect, TabLayout, custom_label, grid_row_sizes, sorted_pane_ids,
     };
+
+    #[test]
+    fn three_columns_keep_exact_cell_boundaries_at_every_terminal_width() {
+        use super::{LayoutNode, SplitDirection, grid_ratios, read_grid};
+        let pane = || {
+            Box::new(LayoutNode::Pane {
+                pane_id: String::new(),
+            })
+        };
+        let pair = || {
+            Box::new(LayoutNode::Split {
+                direction: SplitDirection::Right,
+                first: pane(),
+                second: pane(),
+            })
+        };
+        for (first, second) in [(pane(), pair()), (pair(), pane())] {
+            let root = LayoutNode::Split {
+                direction: SplitDirection::Right,
+                first,
+                second,
+            };
+            let grid = read_grid(&root).unwrap();
+            for width in 3..=u16::MAX {
+                let updates = grid_ratios(
+                    &root,
+                    &grid,
+                    Bounds {
+                        width: width as f64,
+                        height: 40.0,
+                        x: 0.0,
+                        y: 0.0,
+                    },
+                );
+                let cells = |extent: u16, ratio: f64| (extent as f32 * ratio as f32).round() as u16;
+                let outer = cells(width, updates[0].1);
+                let boundaries = if updates[1].0 == [false] {
+                    (cells(outer, updates[1].1), outer)
+                } else {
+                    (outer, outer + cells(width - outer, updates[1].1))
+                };
+                assert_eq!(
+                    boundaries,
+                    (
+                        (width as f64 / 3.0).round() as u16,
+                        (width as f64 * 2.0 / 3.0).round() as u16
+                    ),
+                    "width {width}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn custom_label_drops_only_the_positional_number_herdr_reports_by_default() {

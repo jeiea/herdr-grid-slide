@@ -29,6 +29,53 @@ static SESSION_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[test]
 #[ignore = "requires Herdr and starts an isolated named session"]
+fn adding_six_panes_aligns_columns_and_builds_matching_rows() {
+    let mut live = LiveHerdr::start().expect("start isolated Herdr session");
+    let fixture = live
+        .create_workspace("grid-columns")
+        .expect("create workspace");
+    live.link_plugin().expect("link copied plugin");
+    for _ in 0..5 {
+        live.invoke_action_and_wait_for_balance("new-pane")
+            .expect("add pane and settle grid");
+    }
+    let before = live.snapshot().expect("capture automatic grid");
+    let order = panes_in_reading_order(&before, &fixture.tab_id);
+    assert_eq!(order.len(), 6);
+    let splits = tab_layout(&before, &fixture.tab_id)["splits"]
+        .as_array()
+        .unwrap();
+    let ids: Vec<_> = splits
+        .iter()
+        .map(|split| split["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            "split_0_root",
+            "split_1_0",
+            "split_2_00",
+            "split_3_1",
+            "split_4_10"
+        ]
+    );
+    for column in 0..3 {
+        assert_eq!(
+            pane_x(&before, &fixture.tab_id, order[column]),
+            pane_x(&before, &fixture.tab_id, order[column + 3])
+        );
+    }
+    live.invoke_action("balance")
+        .expect("explicitly balance again");
+    let after = live.snapshot().expect("capture explicit grid");
+    assert_eq!(
+        tab_layout(&before, &fixture.tab_id),
+        tab_layout(&after, &fixture.tab_id)
+    );
+}
+
+#[test]
+#[ignore = "requires Herdr and starts an isolated named session"]
 fn move_right_swaps_panes_in_the_same_tab_and_keeps_focus() {
     let mut live = LiveHerdr::start().expect("start isolated Herdr session");
     let source = live

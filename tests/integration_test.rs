@@ -2622,6 +2622,41 @@ fn rejects_the_removed_pane_creation_alias() {
 }
 
 #[test]
+fn new_pane_completes_matching_three_column_rows_with_a_single_split() {
+    let herdr = FakeHerdr::new(tab_snapshot(vec![
+        pane("pane-a", 0, 0, 40, 20),
+        pane("pane-b", 40, 0, 40, 20),
+        pane("pane-c", 80, 0, 40, 20),
+        pane("pane-d", 0, 20, 60, 20),
+        pane("pane-e", 60, 20, 60, 20),
+    ]))
+    .with_replies(
+        "layout.export",
+        [export_reply(split(
+            "down",
+            split(
+                "right",
+                split("right", leaf("pane-a"), leaf("pane-b")),
+                leaf("pane-c"),
+            ),
+            split("right", leaf("pane-d"), leaf("pane-e")),
+        ))],
+    )
+    .with_replies("pane.split", [split_reply("pane-new")]);
+
+    let run = run_new_pane(&herdr, "pane-e");
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            split_call("pane-d", "right")
+        ]
+    );
+}
+
+#[test]
 fn new_pane_only_splits_in_the_existing_direction() {
     // The focused pane is far taller than wide, but every split in the tab runs
     // rightwards, so the new pane joins that row instead of starting a column.
@@ -2649,7 +2684,7 @@ fn new_pane_only_splits_in_the_existing_direction() {
 }
 
 #[test]
-fn new_pane_splits_a_wide_pane_sideways_when_directions_are_mixed() {
+fn new_pane_completes_a_two_by_two_grid_without_moving_existing_panes() {
     let herdr = FakeHerdr::new(tab_snapshot(vec![
         pane("pane-a", 0, 0, 100, 40),
         pane("pane-b", 100, 0, 100, 40),
@@ -2673,7 +2708,7 @@ fn new_pane_splits_a_wide_pane_sideways_when_directions_are_mixed() {
         [
             snapshot_call(),
             export_call(),
-            split_call("pane-a", "right"),
+            split_call("pane-c", "right"),
         ]
     );
 }
@@ -3362,49 +3397,72 @@ fn pane_focused_latest_user_tab_wins_during_success_and_failure() {
 }
 
 #[test]
-fn balance_accepts_rows_however_their_splits_are_nested() {
-    // Both rows hold three panes but nest them the other way around, which is the
-    // same grid, so the panes are only resized.
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 100, 50),
-        pane("pane-b", 100, 0, 100, 50),
-        pane("pane-c", 200, 0, 100, 50),
-        pane("pane-d", 0, 50, 100, 50),
-        pane("pane-e", 100, 50, 100, 50),
-        pane("pane-f", 200, 50, 100, 50),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(split(
-            "down",
-            split(
-                "right",
-                leaf("pane-a"),
-                split("right", leaf("pane-b"), leaf("pane-c")),
-            ),
-            split(
-                "right",
-                split("right", leaf("pane-d"), leaf("pane-e")),
-                leaf("pane-f"),
-            ),
-        ))],
-    );
-
-    let run = run_balance(&herdr, "pane-a");
-
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            ratio_call(&[], 0.5),
-            ratio_call(&[false], 1.0 / 3.0),
-            ratio_call(&[false, true], 0.5),
-            ratio_call(&[true], 2.0 / 3.0),
-            ratio_call(&[true, false], 0.5),
-        ]
-    );
+fn balance_aligns_columns_without_rebuilding_differently_nested_rows() {
+    for width in [119, 120, 121, 122, 127, 128] {
+        for automatic in [false, true] {
+            let herdr = FakeHerdr::new(focused(
+                tab_snapshot(vec![
+                    pane("pane-a", 0, 0, width / 3, 20),
+                    pane("pane-b", width / 3, 0, width / 3, 20),
+                    pane("pane-c", 2 * (width / 3), 0, width - 2 * (width / 3), 20),
+                    pane("pane-d", 0, 20, width / 3, 20),
+                    pane("pane-e", width / 3, 20, width / 3, 20),
+                    pane("pane-f", 2 * (width / 3), 20, width - 2 * (width / 3), 20),
+                ]),
+                "workspace-1",
+                "tab-main",
+                "pane-a",
+            ))
+            .with_replies(
+                "layout.export",
+                [export_reply(split(
+                    "down",
+                    split(
+                        "right",
+                        leaf("pane-a"),
+                        split("right", leaf("pane-b"), leaf("pane-c")),
+                    ),
+                    split(
+                        "right",
+                        split("right", leaf("pane-d"), leaf("pane-e")),
+                        leaf("pane-f"),
+                    ),
+                ))],
+            );
+            let run = if automatic {
+                herdr.run("workspace-1", "tab-main", "pane-a", &["on-pane-focused"])
+            } else {
+                run_balance(&herdr, "pane-a")
+            };
+            run.assert_success();
+            let updates: Vec<_> = run
+                .requests
+                .iter()
+                .filter(|call| call.method == "layout.set_split_ratio")
+                .collect();
+            assert_eq!(updates.len(), 5, "width {width}, automatic {automatic}");
+            // Match Herdr's f32 multiplication and rounding, including each nested split.
+            let cells = |size: u16, index: usize| {
+                (size as f32 * updates[index].params["ratio"].as_f64().unwrap() as f32).round()
+                    as u16
+            };
+            let top_first = cells(width, 1);
+            let top_second = top_first + cells(width - top_first, 2);
+            let bottom_second = cells(width, 3);
+            let bottom_first = cells(bottom_second, 4);
+            assert_eq!(
+                (top_first, top_second),
+                (bottom_first, bottom_second),
+                "width {width}, automatic {automatic}"
+            );
+            assert_eq!(top_first, (width as f64 / 3.0).round() as u16);
+            assert_eq!(top_second, (width as f64 * 2.0 / 3.0).round() as u16);
+            assert!(run.requests.iter().all(|call| matches!(
+                call.method.as_str(),
+                "session.snapshot" | "layout.export" | "layout.set_split_ratio"
+            )));
+        }
+    }
 }
 
 #[test]
@@ -3809,8 +3867,8 @@ fn balance_halves_the_rows_it_rebuilds_so_no_split_runs_lopsided() {
             move_call("pane-b", attach_destination("pane-a", "right")),
             move_call("pane-d", attach_destination("pane-c", "right")),
             export_call(),
-            ratio_call(&[], 2.0 / 3.0),
-            ratio_call(&[false], 0.5),
+            ratio_call(&[], 67.0 / 100.0),
+            ratio_call(&[false], 33.0 / 67.0),
             ratio_call(&[false, false], 0.5),
             ratio_call(&[false, true], 0.5),
             focus_call("pane-a"),
