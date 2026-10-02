@@ -11,6 +11,9 @@ if [ "$shellcheck_version" != 0.11.0 ]; then
 fi
 
 ./scripts/check-version.sh
+deno fmt --check .mise/tasks/*.ts scripts/*.ts
+deno lint .mise/tasks/*.ts scripts/*.ts
+deno check .mise/tasks/*.ts
 shellcheck scripts/*.sh tests/*.sh .mise/tasks/*.sh
 for test_script in tests/*.sh
 do

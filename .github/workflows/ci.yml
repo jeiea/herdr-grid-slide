@@ -24,11 +24,11 @@ jobs:
         run: |
           rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
           rustup default 1.97.1
-      - name: Install configured ShellCheck
+      - name: Install configured ShellCheck and Deno
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           version: 2026.9.12
-          install_args: shellcheck
+          install_args: shellcheck deno
       - name: Run quality gate
         run: ./.mise/tasks/check.sh
 
@@ -45,7 +45,9 @@ jobs:
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           version: 2026.9.12
-          install_args: rust
+          install_args: rust deno
+      - name: Test common tasks
+        run: sh tests/apply_local_test.sh
       - name: Test installer
         run: sh tests/install_test.sh
       - name: Run integration tests
@@ -68,5 +70,10 @@ jobs:
           rustup default 1.97.1
       - name: Check Windows code
         run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Install configured Deno
+        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
+        with:
+          version: 2026.9.12
+          install_args: deno
       - name: Run Rust and PowerShell installer tests
         run: cargo test --locked

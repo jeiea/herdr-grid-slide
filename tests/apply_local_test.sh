@@ -5,9 +5,6 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/herdr-grid-slide-apply-local.XXXXXX")
 trap 'rm -rf "$TMP_DIR"' EXIT HUP INT TERM
 
-REAL_CP=$(command -v cp)
-REAL_CHMOD=$(command -v chmod)
-REAL_MV=$(command -v mv)
 FAKE_BIN="$TMP_DIR/fake-bin"
 mkdir -p "$FAKE_BIN"
 
@@ -16,20 +13,9 @@ cat >"$FAKE_BIN/cargo" <<'EOF'
 printf '%s\n' "$*" >>"$CARGO_CALLS"
 [ "${FAIL_AT:-}" != build ] || exit 1
 mkdir -p target/release
+[ "${FAIL_AT:-}" != copy ] || exit 0
 printf '%s\n' "$BINARY_CONTENT" >target/release/herdr-grid-slide
-"$REAL_CHMOD" +x target/release/herdr-grid-slide
-EOF
-
-cat >"$FAKE_BIN/cp" <<'EOF'
-#!/bin/sh
-"$REAL_CP" "$@"
-[ "${FAIL_AT:-}" != copy ] || exit 1
-EOF
-
-cat >"$FAKE_BIN/mv" <<'EOF'
-#!/bin/sh
-[ "${FAIL_AT:-}" != move ] || exit 1
-exec "$REAL_MV" "$@"
+chmod +x target/release/herdr-grid-slide
 EOF
 
 cat >"$FAKE_BIN/herdr" <<'EOF'
@@ -38,23 +24,23 @@ set -eu
 test "$(cat bin/herdr-grid-slide)" = "$BINARY_CONTENT"
 printf '%s|%s\n' "$PWD" "$*" >>"$HERDR_CALLS"
 EOF
-chmod +x "$FAKE_BIN/cargo" "$FAKE_BIN/cp" "$FAKE_BIN/mv" "$FAKE_BIN/herdr"
+chmod +x "$FAKE_BIN/cargo" "$FAKE_BIN/herdr"
 
 prepare_project() {
   PROJECT="$TMP_DIR/$1"
-  mkdir -p "$PROJECT/.mise/tasks"
-  PROJECT=$(CDPATH='' cd -- "$PROJECT" && pwd)
-  cp "$ROOT/.mise/tasks/apply-local.sh" "$PROJECT/.mise/tasks/apply-local.sh"
+  mkdir -p "$PROJECT/.mise/tasks" "$PROJECT/scripts"
+  PROJECT=$(CDPATH='' cd -- "$PROJECT" && pwd -P)
+  cp "$ROOT/.mise/tasks/apply-local.ts" "$PROJECT/.mise/tasks/apply-local.ts"
+  cp "$ROOT/scripts/task.ts" "$PROJECT/scripts/task.ts"
   CARGO_CALLS="$PROJECT/cargo-calls"
   HERDR_CALLS="$PROJECT/herdr-calls"
 }
 
 run_apply_local() {
   PATH="$FAKE_BIN:$PATH" \
-    REAL_CP="$REAL_CP" REAL_CHMOD="$REAL_CHMOD" REAL_MV="$REAL_MV" \
     CARGO_CALLS="$CARGO_CALLS" HERDR_CALLS="$HERDR_CALLS" \
     BINARY_CONTENT="$1" FAIL_AT="${2:-}" \
-    "$PROJECT/.mise/tasks/apply-local.sh"
+    deno run -A "$PROJECT/.mise/tasks/apply-local.ts"
 }
 
 assert_no_staged_binary() {
@@ -104,4 +90,14 @@ assert_no_staged_binary
 
 assert_failed_without_replacing_or_calling_herdr build
 assert_failed_without_replacing_or_calling_herdr copy
-assert_failed_without_replacing_or_calling_herdr move
+
+prepare_project failure-move
+mkdir -p "$PROJECT/bin/herdr-grid-slide"
+printf '%s\n' existing >"$PROJECT/bin/herdr-grid-slide/marker"
+if run_apply_local replacement; then
+  echo "move failure unexpectedly succeeded" >&2
+  exit 1
+fi
+test "$(cat "$PROJECT/bin/herdr-grid-slide/marker")" = existing
+test ! -s "$HERDR_CALLS"
+assert_no_staged_binary

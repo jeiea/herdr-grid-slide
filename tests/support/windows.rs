@@ -10,30 +10,30 @@ fn applying_local_windows_builds_replaces_and_reloads_only_after_success() {
     fs::create_dir_all(project.join(".mise/tasks")).unwrap();
     fs::create_dir_all(project.join("tools")).unwrap();
     fs::copy(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join(".mise/tasks/apply-local.ps1"),
-        project.join(".mise/tasks/apply-local.ps1"),
+        Path::new(env!("CARGO_MANIFEST_DIR")).join(".mise/tasks/apply-local.ts"),
+        project.join(".mise/tasks/apply-local.ts"),
+    )
+    .unwrap();
+    fs::create_dir_all(project.join("scripts")).unwrap();
+    fs::copy(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("scripts/task.ts"),
+        project.join("scripts/task.ts"),
     )
     .unwrap();
     fs::write(
         project.join("tools/cargo.cmd"),
-        "@echo off\r\nif not \"%*\"==\"build --locked --release\" exit /b 90\r\nif \"%FAIL_AT%\"==\"build\" exit /b 42\r\nif not exist target\\release mkdir target\\release\r\nif \"%FAIL_AT%\"==\"copy\" exit /b 0\r\ncopy /y \"%TEST_BINARY%\" target\\release\\herdr-grid-slide.exe >nul\r\n",
+        "@echo off\r\nif not \"%~1 %~2 %~3\"==\"build --locked --release\" exit /b 90\r\nif \"%FAIL_AT%\"==\"build\" exit /b 42\r\nif not exist target\\release mkdir target\\release\r\nif \"%FAIL_AT%\"==\"copy\" exit /b 0\r\ncopy /y \"%TEST_BINARY%\" target\\release\\herdr-grid-slide.exe >nul\r\n",
     )
     .unwrap();
     fs::write(
         project.join("tools/herdr.cmd"),
-        "@echo off\r\nif not exist bin\\herdr-grid-slide.exe exit /b 91\r\necho %*>>calls\r\nif \"%FAIL_AT%\"==\"%*\" exit /b 43\r\n",
+        "@echo off\r\nif not exist bin\\herdr-grid-slide.exe exit /b 91\r\nset \"args=%~1 %~2\"\r\nif not \"%~3\"==\"\" set \"args=%args% %~3\"\r\necho %args%>>calls\r\nif \"%FAIL_AT%\"==\"%args%\" exit /b 43\r\n",
     )
     .unwrap();
     let run = |failure: &str| {
-        ProcessCommand::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-            ])
-            .arg(project.join(".mise/tasks/apply-local.ps1"))
+        ProcessCommand::new("deno")
+            .args(["run", "-A"])
+            .arg(project.join(".mise/tasks/apply-local.ts"))
             .current_dir(&herdr.directory)
             .env(
                 "PATH",
