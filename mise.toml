@@ -2,3 +2,4 @@
 deno = "2.9.7"
 rust = "1.97.1"
 shellcheck = "0.11.0"
+vhs = "latest"

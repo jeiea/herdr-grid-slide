@@ -47,7 +47,9 @@ jobs:
           version: 2026.9.12
           install_args: rust deno
       - name: Test common tasks
-        run: sh tests/apply_local_test.sh
+        run: |
+          sh tests/apply_local_test.sh
+          deno test -A tests/*.ts
       - name: Test installer
         run: sh tests/install_test.sh
       - name: Run integration tests
@@ -75,5 +77,7 @@ jobs:
         with:
           version: 2026.9.12
           install_args: deno
+      - name: Test common tasks
+        run: deno test -A tests/*.ts
       - name: Run Rust and PowerShell installer tests
         run: cargo test --locked
