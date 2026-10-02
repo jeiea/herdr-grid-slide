@@ -32,7 +32,7 @@ enum MoveDirection {
     Previous,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 enum PaneDirection {
     Left,
     Right,
@@ -69,6 +69,7 @@ enum Command {
 enum BalanceFocusPolicy<'a> {
     BeforeEntry(Option<&'a str>),
     Automatic,
+    DirectionalEntry(PaneDirection, &'a str, Point),
     Explicit,
 }
 
@@ -286,7 +287,7 @@ struct BalanceFocusState {
     tab_id: String,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 struct Point {
     x: f64,
     y: f64,
@@ -333,6 +334,57 @@ struct ScratchTab<'a> {
 }
 
 impl<'a> GridPlan<'a> {
+    /// Keep the newcomer on the entry edge after reflow, while preserving the
+    /// other panes' reading order. Splitting an edge pane alone cannot guarantee
+    /// this: the appended pane may wrap into the first cell of the next row.
+    fn place_entry(&mut self, direction: PaneDirection, pane_id: &str, point: Point) {
+        let Some(source) = self.order.iter().position(|pane| *pane == pane_id) else {
+            return;
+        };
+        let horizontal = matches!(direction, PaneDirection::Left | PaneDirection::Right);
+        let axis = if horizontal { point.y } else { point.x };
+        let mut offset = 0;
+        let mut candidates = Vec::new();
+        for (row, &columns) in self.row_sizes.iter().enumerate() {
+            for column in 0..columns {
+                let on_edge = match direction {
+                    PaneDirection::Left => column + 1 == columns,
+                    PaneDirection::Right => column == 0,
+                    PaneDirection::Up => row + 1 == self.row_sizes.len(),
+                    PaneDirection::Down => row == 0,
+                };
+                if on_edge {
+                    let (slot, count, extent) = if horizontal {
+                        (row, self.row_sizes.len(), self.bounds.height)
+                    } else {
+                        (column, columns, self.bounds.width)
+                    };
+                    let start = (extent * slot as f64 / count as f64).round() / extent;
+                    let end = (extent * (slot + 1) as f64 / count as f64).round() / extent;
+                    candidates.push((offset + column, start, end));
+                }
+            }
+            offset += columns;
+        }
+        let target = candidates.into_iter().min_by(|left, right| {
+            interval_distance(axis, left.1, left.2)
+                .total_cmp(&interval_distance(axis, right.1, right.2))
+                .then_with(|| {
+                    (axis - (left.1 + left.2) / 2.0)
+                        .abs()
+                        .total_cmp(&(axis - (right.1 + right.2) / 2.0).abs())
+                })
+                .then_with(|| match direction {
+                    PaneDirection::Left | PaneDirection::Up => right.0.cmp(&left.0),
+                    PaneDirection::Right | PaneDirection::Down => left.0.cmp(&right.0),
+                })
+        });
+        if let Some((target, _, _)) = target {
+            let pane = self.order.remove(source);
+            self.order.insert(target, pane);
+        }
+    }
+
     /// The panes of each row, in reading order.
     fn rows(&self) -> Vec<&[&'a str]> {
         let mut rows = Vec::new();
@@ -759,8 +811,12 @@ fn move_tab_workspace(
             })?;
     }
     match created_tab_id {
-        Some(tab_id) => balance_focused_pane_locked(&lock, client, Some(tab_id))
-            .map_err(|error| format!("tab moved, but automatic balance failed: {error}")),
+        Some(tab_id) => balance_focused_pane_locked(
+            &lock,
+            client,
+            Some((tab_id, BalanceFocusPolicy::Automatic)),
+        )
+        .map_err(|error| format!("tab moved, but automatic balance failed: {error}")),
         None => Ok(()),
     }
 }
@@ -960,8 +1016,22 @@ fn move_directionally(
             next_state.pane_id
         )
     })?;
-    balance_focused_pane_locked(&lock, client, Some(&target_tab_id))
-        .map_err(|error| format!("pane moved, but automatic balance failed: {error}"))?;
+    balance_focused_pane_locked(
+        &lock,
+        client,
+        Some((
+            &target_tab_id,
+            BalanceFocusPolicy::DirectionalEntry(
+                direction,
+                &next_state.pane_id,
+                Point {
+                    x: next_state.x,
+                    y: next_state.y,
+                },
+            ),
+        )),
+    )
+    .map_err(|error| format!("pane moved, but automatic balance failed: {error}"))?;
     Ok(())
 }
 
@@ -1092,7 +1162,11 @@ fn balance_focused_pane(
     expected_destination_tab_id: Option<&str>,
 ) -> Result<()> {
     let lock = lock_balance(context)?;
-    balance_focused_pane_locked(&lock, client, expected_destination_tab_id)
+    balance_focused_pane_locked(
+        &lock,
+        client,
+        expected_destination_tab_id.map(|tab_id| (tab_id, BalanceFocusPolicy::Automatic)),
+    )
 }
 
 /// The lock every hook and tab-scoped move takes before reading the session, held
@@ -1129,7 +1203,7 @@ fn lock_balance_state_dir(state_dir: &Path) -> Result<BalanceLock<'_>> {
 fn balance_focused_pane_locked(
     lock: &BalanceLock,
     client: &mut SocketClient,
-    mut expected_destination_tab_id: Option<&str>,
+    mut destination: Option<(&str, BalanceFocusPolicy<'_>)>,
 ) -> Result<()> {
     let state_dir = lock.state_dir;
     let mut previous = read_balance_focus_state(state_dir)?;
@@ -1147,8 +1221,11 @@ fn balance_focused_pane_locked(
         // pane changes the pane set, and a resized window changes the bounds; both
         // warrant a balance.
         let observed = observed_balance_focus(tab_id, snapshot_layout);
-        let force_balance = expected_destination_tab_id.take() == Some(tab_id);
-        if !force_balance && previous.as_ref() == Some(&observed) {
+        let focus_policy = destination
+            .take()
+            .filter(|(expected, _)| *expected == tab_id)
+            .map(|(_, policy)| policy);
+        if focus_policy.is_none() && previous.as_ref() == Some(&observed) {
             break;
         }
         write_state_file(state_dir, BALANCE_FOCUS_STATE_FILE, &observed)?;
@@ -1172,7 +1249,7 @@ fn balance_focused_pane_locked(
             tab_id,
             workspace_id,
             focus_pane_id,
-            BalanceFocusPolicy::Automatic,
+            focus_policy.unwrap_or(BalanceFocusPolicy::Automatic),
         ) {
             failures.push(format!("could not automatically balance {tab_id}: {error}"));
         }
@@ -1256,7 +1333,7 @@ fn balance_exported_layout(
         return Ok(());
     }
     let bounds = layout_bounds(snapshot_layout)?;
-    let plan = GridPlan {
+    let mut plan = GridPlan {
         bounds,
         focus_policy,
         focus_pane_id,
@@ -1265,6 +1342,9 @@ fn balance_exported_layout(
         tab_id,
         workspace_id,
     };
+    if let BalanceFocusPolicy::DirectionalEntry(direction, pane_id, point) = focus_policy {
+        plan.place_entry(direction, pane_id, point);
+    }
     match read_grid(&layout.root).filter(|grid| plan.matches(grid)) {
         Some(grid) => sort_grid(client, &plan, &layout.root, &grid),
         None => rebuild_grid(client, &plan),
@@ -1436,7 +1516,9 @@ fn settle_rebuilt_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()>
 fn ensure_balance_focus_is_current(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
     let expected = match plan.focus_policy {
         BalanceFocusPolicy::Explicit => return Ok(()),
-        BalanceFocusPolicy::Automatic => Some(plan.tab_id),
+        BalanceFocusPolicy::Automatic | BalanceFocusPolicy::DirectionalEntry(..) => {
+            Some(plan.tab_id)
+        }
         BalanceFocusPolicy::BeforeEntry(source_tab_id) => source_tab_id,
     };
     let snapshot = read_snapshot(client)?;
@@ -2567,8 +2649,62 @@ fn required_env(name: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Bounds, LayoutPane, Rect, TabLayout, custom_label, grid_row_sizes, sorted_pane_ids,
+        BalanceFocusPolicy, Bounds, GridPlan, LayoutPane, PaneDirection, Point, Rect, TabLayout,
+        custom_label, grid_row_sizes, sorted_pane_ids,
     };
+
+    #[test]
+    fn entering_a_reflowed_grid_keeps_the_entry_edge_and_other_panes_in_order() {
+        use PaneDirection::{Down, Left, Right, Up};
+        for (rows, direction, axis, target) in [
+            (vec![3, 3], Left, 0.25, 2),
+            (vec![3, 3], Left, 0.5, 5),
+            (vec![3, 3], Right, 0.5, 0),
+            (vec![3, 3], Right, 0.75, 3),
+            (vec![3, 3], Up, 0.2, 3),
+            (vec![3, 3], Up, 0.8, 5),
+            (vec![3, 3], Down, 0.2, 0),
+            (vec![3, 3], Down, 0.8, 2),
+            (vec![3, 2], Left, 0.75, 4),
+            (vec![3, 2], Right, 0.75, 3),
+            (vec![3, 2], Up, 0.5, 4),
+            (vec![3, 2], Down, 0.5, 1),
+            (vec![1, 1, 1], Left, 0.1, 0),
+            (vec![1, 1, 1], Up, 0.5, 2),
+            (vec![3], Right, 0.5, 0),
+            (vec![3], Down, 0.5, 1),
+        ] {
+            let order: Vec<_> = ["A", "F", "B", "C", "D", "E"]
+                .into_iter()
+                .take(rows.iter().sum())
+                .collect();
+            let others: Vec<_> = order.iter().copied().filter(|pane| *pane != "F").collect();
+            let mut plan = GridPlan {
+                bounds: Bounds {
+                    width: 120.0,
+                    height: 40.0,
+                    x: 0.0,
+                    y: 0.0,
+                },
+                focus_policy: BalanceFocusPolicy::Automatic,
+                focus_pane_id: "A",
+                order,
+                row_sizes: rows,
+                tab_id: "tab",
+                workspace_id: "workspace",
+            };
+            plan.place_entry(direction, "F", Point { x: axis, y: axis });
+            assert_eq!(plan.order[target], "F");
+            assert_eq!(
+                plan.order
+                    .iter()
+                    .copied()
+                    .filter(|pane| *pane != "F")
+                    .collect::<Vec<_>>(),
+                others,
+            );
+        }
+    }
 
     #[test]
     fn three_columns_keep_exact_cell_boundaries_at_every_terminal_width() {

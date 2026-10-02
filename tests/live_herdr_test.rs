@@ -141,7 +141,7 @@ fn arranging_panes_across_tabs_and_workspaces_keeps_every_view_balanced_and_focu
         "move-left",
         Some("pane.focused"),
     );
-    live.assert_scene(&snapshot, f, &[vec![vec![e, c, &a, f, d, b]]]);
+    live.assert_scene(&snapshot, f, &[vec![vec![e, c, f, &a, d, b]]]);
     let snapshot = live.terminate("exit focused F", &focused_pane_id(&snapshot), true);
     let survivor = terminal_id(&snapshot, &focused_pane_id(&snapshot));
     live.assert_scene(&snapshot, &survivor, &[vec![vec![e, c, &a, d, b]]]);
