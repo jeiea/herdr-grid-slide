@@ -1374,7 +1374,7 @@ fn sort_grid(
         ));
     }
     for (index, (source, target)) in swaps.iter().enumerate() {
-        ensure_balance_focus_is_current(client, plan)?;
+        ensure_balance_focus_is_current(client, plan, None)?;
         let swap = client.request(
             "pane.swap",
             json!({"source_pane_id": source, "target_pane_id": target}),
@@ -1399,18 +1399,33 @@ fn sort_grid(
 }
 
 /// Takes a tab apart and lays it out again as the target grid. herdr refuses to move
-/// a pane inside its own tab, so every pane but the first goes out to a scratch tab
-/// and comes back one at a time; the last one to leave takes the empty scratch tab
-/// with it. A rebuild interrupted halfway is not undone -- the panes are brought
-/// home, but the shape they land in is whatever the moves left behind.
+/// a pane inside its own tab. If rebuilding would displace the focus, move it first
+/// and keep Herdr's chosen return target in the original tab. Background preparation
+/// keeps the first pane instead, because swapping positions would expose that tab.
+/// An interrupted rebuild brings panes home without undoing their partial layout.
 fn rebuild_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
-    let (anchor, staged) = plan
+    let first = plan
         .order
-        .split_first()
+        .first()
+        .copied()
         .ok_or("nothing to balance in an empty tab")?;
+    let background = matches!(plan.focus_policy, BalanceFocusPolicy::BeforeEntry(_));
+    let staged_focus = (!background && plan.focus_pane_id != first).then_some(plan.focus_pane_id);
+    let mut anchor = first;
     let mut scratch = ScratchTab::default();
-    for pane in staged {
-        ensure_balance_focus_is_current(client, plan)
+    for pane in staged_focus.into_iter().chain(
+        plan.order
+            .iter()
+            .copied()
+            .filter(|pane| Some(*pane) != staged_focus),
+    ) {
+        if pane == anchor {
+            continue;
+        }
+        let expected_focus = staged_focus
+            .filter(|_| scratch.panes.is_empty())
+            .unwrap_or(anchor);
+        ensure_balance_focus_is_current(client, plan, (!background).then_some(expected_focus))
             .map_err(|error| recovered(client, plan, anchor, &scratch, error))?;
         let destination = match &scratch.tab_id {
             Some(tab_id) => tab_edge(tab_id),
@@ -1436,15 +1451,63 @@ fn rebuild_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
             let error = format!("herdr moved {pane} to a new tab without saying which one");
             return Err(with_focus_back(client, plan, error));
         }
+        if Some(pane) == staged_focus {
+            anchor = plan
+                .order
+                .iter()
+                .copied()
+                .find(|candidate| {
+                    *candidate != pane
+                        && Some(*candidate) == scratch.expected_focus_pane_id.as_deref()
+                })
+                .ok_or_else(|| {
+                    recovered(
+                        client,
+                        plan,
+                        anchor,
+                        &scratch,
+                        format!("herdr moved {pane} without reporting its remaining focus"),
+                    )
+                })?;
+        }
     }
+    let kept_focus = (!background).then_some(anchor);
+    // Draw the same tree around the return target, then restore its intended slot
+    // without changing focus. Restoring the original pane afterwards records that
+    // target instead of the grid's first pane in Herdr's focus history.
+    let positioned = |pane| {
+        if pane == first {
+            anchor
+        } else if pane == anchor {
+            first
+        } else {
+            pane
+        }
+    };
     for (pane, target, direction) in grid_moves(&plan.rows()) {
-        ensure_balance_focus_is_current(client, plan)
+        ensure_balance_focus_is_current(client, plan, kept_focus)
             .map_err(|error| recovered(client, plan, anchor, &scratch, error))?;
-        let destination = attachment(plan.tab_id, target, direction);
+        let pane = positioned(pane);
+        let destination = attachment(plan.tab_id, positioned(target), direction);
         if let Err(error) = move_pane_to(client, pane, destination) {
             return Err(recovered(client, plan, anchor, &scratch, error));
         }
         scratch.panes.retain(|staged| *staged != pane);
+    }
+    if anchor != first {
+        ensure_balance_focus_is_current(client, plan, kept_focus)
+            .map_err(|error| recovered(client, plan, anchor, &scratch, error))?;
+        let swapped = request_pane_swap(client, anchor, first)
+            .map_err(|error| recovered(client, plan, anchor, &scratch, error))?;
+        if let Some(reason) = swapped.refusal_reason() {
+            return Err(recovered(
+                client,
+                plan,
+                anchor,
+                &scratch,
+                format!("herdr refused to restore the pane order: {reason}"),
+            ));
+        }
     }
     match settle_rebuilt_grid(client, plan) {
         Ok(()) if plan.focus_policy == BalanceFocusPolicy::Explicit => {
@@ -1480,7 +1543,7 @@ fn restore_focus_after_success(
     if snapshot.focused_tab_id.as_deref() == Some(plan.tab_id)
         && snapshot.focused_pane_id.as_deref() == Some(expected_focus_pane_id)
     {
-        let _ = client.request("pane.focus", json!({"pane_id": plan.focus_pane_id}));
+        client.request("pane.focus", json!({"pane_id": plan.focus_pane_id}))?;
     }
     Ok(())
 }
@@ -1517,7 +1580,11 @@ fn settle_rebuilt_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()>
     Ok(())
 }
 
-fn ensure_balance_focus_is_current(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
+fn ensure_balance_focus_is_current(
+    client: &mut SocketClient,
+    plan: &GridPlan,
+    kept_pane_id: Option<&str>,
+) -> Result<()> {
     let expected = match plan.focus_policy {
         BalanceFocusPolicy::Explicit => return Ok(()),
         BalanceFocusPolicy::Automatic | BalanceFocusPolicy::DirectionalEntry(..) => {
@@ -1526,14 +1593,18 @@ fn ensure_balance_focus_is_current(client: &mut SocketClient, plan: &GridPlan) -
         BalanceFocusPolicy::BeforeEntry(source_tab_id) => source_tab_id,
     };
     let snapshot = read_snapshot(client)?;
-    if snapshot.focused_tab_id.as_deref() == expected {
-        Ok(())
-    } else {
-        Err(format!(
+    if snapshot.focused_tab_id.as_deref() != expected {
+        return Err(format!(
             "focus left {} while it was being balanced",
             expected.unwrap_or("the source tab")
-        ))
+        ));
     }
+    if let Some(pane_id) = kept_pane_id
+        && snapshot.focused_pane_id.as_deref() != Some(pane_id)
+    {
+        return Err(format!("focus left {pane_id} while it was being balanced"));
+    }
+    Ok(())
 }
 
 /// Direct tab/workspace sends attach beside Herdr's last-focused destination

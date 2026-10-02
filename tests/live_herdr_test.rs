@@ -46,6 +46,26 @@ fn arranging_panes_across_tabs_and_workspaces_keeps_every_view_balanced_and_focu
             .chain(added.iter().map(String::as_str))
             .collect();
         live.assert_scene(&snapshot, added.last().unwrap(), &[vec![terminals]]);
+        if added.len() == 3 {
+            let snapshot = live.terminate(
+                "exit focused D from the two by two grid",
+                &focused_pane_id(&snapshot),
+                true,
+            );
+            added.pop();
+            live.assert_scene(
+                &snapshot,
+                &added[1],
+                &[vec![vec![&a, &added[0], &added[1]]]],
+            );
+            let snapshot = live.step("recreate D after C", "new-pane", Some("pane.focused"));
+            added.push(terminal_id(&snapshot, &focused_pane_id(&snapshot)));
+            live.assert_scene(
+                &snapshot,
+                &added[2],
+                &[vec![vec![&a, &added[0], &added[1], &added[2]]]],
+            );
+        }
     }
     let [b, c, d, e, f] = added.as_slice() else {
         panic!("five added panes")
@@ -158,11 +178,7 @@ fn arranging_panes_across_tabs_and_workspaces_keeps_every_view_balanced_and_focu
     );
     let snapshot = live.terminate("close unfocused auxiliary through API", &auxiliary, false);
     live.assert_scene(&snapshot, f, &[vec![vec![&a, c, d, b, e], vec![f]]]);
-    let snapshot = live.step(
-        "move F into previous tab",
-        "move-left",
-        Some("pane.focused"),
-    );
+    let snapshot = live.step("move F into previous tab", "move-left", None);
     live.assert_scene(&snapshot, f, &[vec![vec![&a, c, f, d, b, e]]]);
     let snapshot = live.terminate("exit focused F", &focused_pane_id(&snapshot), true);
     let survivor = terminal_id(&snapshot, &focused_pane_id(&snapshot));
@@ -457,9 +473,48 @@ fn closing_focused_and_unfocused_panes_through_the_api_balances_multiple_survivo
     let fixture = live
         .create_workspace("focused API close")
         .expect("create workspace");
+    let b = live
+        .split_pane(&fixture.root_pane_id, "right", true)
+        .expect("B");
+    let c = live.split_pane(&b, "right", true).expect("C");
+    let d = live.split_pane(&c, "right", true).expect("D");
+    live.run_json(["pane", "focus", "--direction", "left", "--pane", &b])
+        .expect("select A");
+    live.run_json(["pane", "focus", "--direction", "right", "--pane", &c])
+        .expect("return to D from A");
+    let before = live.snapshot().expect("row before balancing");
+    let a_terminal = terminal_id(&before, &fixture.root_pane_id);
+    let b_terminal = terminal_id(&before, &b);
+    let c_terminal = terminal_id(&before, &c);
+    let d_terminal = terminal_id(&before, &d);
+    live.link_plugin().expect("link copied plugin");
+    let balanced = live.step("balance after selecting A then D", "balance", None);
+    live.assert_scene(
+        &balanced,
+        &d_terminal,
+        &[vec![vec![
+            &a_terminal,
+            &b_terminal,
+            &c_terminal,
+            &d_terminal,
+        ]]],
+    );
+    let after = live.terminate("close D and return to the user's A", &d, false);
+    live.assert_scene(
+        &after,
+        &a_terminal,
+        &[vec![vec![&a_terminal, &b_terminal, &c_terminal]]],
+    );
+    let after = live.terminate("close unfocused C", &c, false);
+    live.assert_scene(&after, &a_terminal, &[vec![vec![&a_terminal, &b_terminal]]]);
+    let after = live.terminate("close unfocused B", &b, false);
+    live.assert_scene(&after, &a_terminal, &[vec![vec![&a_terminal]]]);
+    let logs = live.plugin_log_ids().expect("logs before T-layout setup");
     let terminated = live
         .split_pane(&fixture.root_pane_id, "right", true)
         .expect("terminating pane");
+    live.wait_for_hooks(&logs, Some("pane.focused"))
+        .expect("settle the two-pane setup");
     let survivor = live
         .split_pane(&fixture.root_pane_id, "down", false)
         .expect("lower survivor");
@@ -477,7 +532,6 @@ fn closing_focused_and_unfocused_panes_through_the_api_balances_multiple_survivo
         terminal_id(&before, &fixture.root_pane_id),
         terminal_id(&before, &survivor),
     ];
-    live.link_plugin().expect("link copied plugin");
     let after = live.terminate("focused API close", &terminated, false);
     let focused = terminal_id(&after, &focused_pane_id(&after));
     live.assert_scene(

@@ -3228,7 +3228,7 @@ fn pane_focused_balances_the_same_tab_when_its_area_changed() {
     // is resized, so the first focus afterwards has to notice that the grid was
     // laid out for a different shape. The tab was a row of two on the desktop; on
     // a phone-shaped area that grid is the wrong shape and becomes a column.
-    let herdr = FakeHerdr::new(focused(
+    let before = focused(
         tab_snapshot(vec![
             pane("pane-a", 0, 0, 50, 100),
             pane("pane-b", 50, 0, 50, 100),
@@ -3236,15 +3236,41 @@ fn pane_focused_balances_the_same_tab_when_its_area_changed() {
         "workspace-1",
         "tab-main",
         "pane-b",
-    ))
-    .with_replies(
-        "layout.export",
-        [
-            export_reply(split("right", leaf("pane-a"), leaf("pane-b"))),
-            export_reply(split("down", leaf("pane-a"), leaf("pane-b"))),
-        ],
-    )
-    .with_replies("pane.move", [new_tab_reply("tab-scratch"), move_reply()]);
+    );
+    let remaining = focused(
+        tab_snapshot(vec![pane("pane-a", 0, 0, 100, 100)]),
+        "workspace-1",
+        "tab-main",
+        "pane-a",
+    );
+    let herdr = FakeHerdr::new(before.clone())
+        .with_replies(
+            "layout.export",
+            [
+                export_reply(split("right", leaf("pane-a"), leaf("pane-b"))),
+                export_reply(split("down", leaf("pane-a"), leaf("pane-b"))),
+            ],
+        )
+        .with_replies(
+            "pane.move",
+            [
+                new_tab_reply_with_source(
+                    "tab-scratch",
+                    focused_layout("tab-main", "pane-a", vec![pane("pane-a", 0, 0, 100, 100)]),
+                ),
+                move_reply(),
+            ],
+        )
+        .with_replies(
+            "session.snapshot",
+            [
+                snapshot_reply(before.clone()),
+                snapshot_reply(before.clone()),
+                snapshot_reply(remaining.clone()),
+                snapshot_reply(remaining),
+                snapshot_reply(before),
+            ],
+        );
     herdr.write_balance_state_with_bounds(
         "tab-main",
         &["pane-a", "pane-b"],
@@ -3254,7 +3280,7 @@ fn pane_focused_balances_the_same_tab_when_its_area_changed() {
     let run = run_on_pane_focused(&herdr, "tab-main", "pane-b");
 
     run.assert_success();
-    // The automatic policy checks before each move that the user is still on the tab.
+    // Restore the selection from Herdr's chosen return target after rebuilding.
     assert_eq!(
         run.requests,
         [
@@ -3266,6 +3292,8 @@ fn pane_focused_balances_the_same_tab_when_its_area_changed() {
             move_call("pane-b", attach_destination("pane-a", "down")),
             export_call(),
             ratio_call(&[], 0.5),
+            snapshot_call(),
+            focus_call("pane-b"),
             snapshot_call(),
         ]
     );
@@ -3377,29 +3405,23 @@ fn pane_focused_quietly_ignores_non_entry_and_non_balanceable_events() {
 }
 
 #[test]
-fn pane_focused_coalesces_internal_swap_rebuild_and_scratch_focus_events() {
+fn automatic_arrangement_keeps_the_users_selection_and_ignores_queued_internal_events() {
     let entered = focused(tangled_snapshot(), "workspace-1", "tab-main", "pane-c");
-    let internally_focused = focused(tangled_snapshot(), "workspace-1", "tab-main", "pane-a");
-    let herdr = tangled_herdr()
+    let mut herdr = tangled_herdr()
         .with_snapshot(entered.clone())
         .with_replies(
             "session.snapshot",
-            [
-                snapshot_reply(entered.clone()),
-                snapshot_reply(entered.clone()),
-                snapshot_reply(entered),
-                snapshot_reply(internally_focused.clone()),
-                snapshot_reply(internally_focused.clone()),
-                snapshot_reply(internally_focused.clone()),
-                snapshot_reply(internally_focused.clone()),
-                snapshot_reply(internally_focused),
-                snapshot_reply(focused(
-                    tangled_snapshot(),
-                    "workspace-1",
-                    "tab-main",
-                    "pane-c",
-                )),
-            ],
+            std::iter::repeat_n(snapshot_reply(entered.clone()), 2)
+                .chain(std::iter::repeat_n(
+                    snapshot_reply(focused(
+                        tangled_snapshot(),
+                        "workspace-1",
+                        "tab-main",
+                        "pane-a",
+                    )),
+                    6,
+                ))
+                .chain([snapshot_reply(entered)]),
         )
         .with_replies(
             "layout.export",
@@ -3423,54 +3445,12 @@ fn pane_focused_coalesces_internal_swap_rebuild_and_scratch_focus_events() {
                     "tab-scratch",
                     focused_layout(
                         "tab-main",
-                        "pane-c",
+                        "pane-a",
                         vec![
-                            pane("pane-a", 0, 0, 100, 100),
-                            pane("pane-c", 100, 0, 100, 50),
+                            pane("pane-b", 0, 0, 100, 100),
+                            pane("pane-a", 100, 0, 100, 50),
                             pane("pane-d", 100, 50, 100, 50),
                         ],
-                    ),
-                ),
-                successful_move_reply(
-                    ("pane-c", "workspace-1", "tab-main"),
-                    ("pane-c", "workspace-1", "tab-scratch"),
-                    (
-                        Some(focused_layout(
-                            "tab-main",
-                            "pane-a",
-                            vec![
-                                pane("pane-a", 0, 0, 100, 100),
-                                pane("pane-d", 100, 0, 100, 100),
-                            ],
-                        )),
-                        focused_layout(
-                            "tab-scratch",
-                            "pane-b",
-                            vec![
-                                pane("pane-b", 0, 0, 100, 100),
-                                pane("pane-c", 100, 0, 100, 100),
-                            ],
-                        ),
-                    ),
-                ),
-                successful_move_reply(
-                    ("pane-d", "workspace-1", "tab-main"),
-                    ("pane-d", "workspace-1", "tab-scratch"),
-                    (
-                        Some(focused_layout(
-                            "tab-main",
-                            "pane-a",
-                            vec![pane("pane-a", 0, 0, 100, 100)],
-                        )),
-                        focused_layout(
-                            "tab-scratch",
-                            "pane-b",
-                            vec![
-                                pane("pane-b", 0, 0, 100, 100),
-                                pane("pane-c", 100, 0, 100, 100),
-                                pane("pane-d", 200, 0, 100, 100),
-                            ],
-                        ),
                     ),
                 ),
                 move_reply(),
@@ -3481,6 +3461,12 @@ fn pane_focused_coalesces_internal_swap_rebuild_and_scratch_focus_events() {
     first.assert_success();
     assert!(first.requests.iter().any(|call| call.method == "pane.move"));
     assert!(first.requests.contains(&focus_call("pane-c")));
+    assert!(
+        !first
+            .requests
+            .iter()
+            .any(|call| { call.method == "pane.move" && call.params["pane_id"] == "pane-a" })
+    );
     assert_eq!(first.requests.last(), Some(&snapshot_call()));
 
     for (tab_id, pane_id) in [
@@ -3492,6 +3478,21 @@ fn pane_focused_coalesces_internal_swap_rebuild_and_scratch_focus_events() {
         internal.assert_success();
         assert_eq!(internal.requests, [snapshot_call()]);
     }
+
+    herdr.write_balance_state("tab-before", &[]);
+    herdr.replies.insert(
+        "pane.focus".to_owned(),
+        [Err("return target vanished".to_owned())]
+            .into_iter()
+            .collect(),
+    );
+    let restore_failed = run_on_pane_focused(&herdr, "tab-main", "pane-c");
+    assert!(
+        restore_failed
+            .assert_failure()
+            .contains("return target vanished")
+    );
+    assert!(restore_failed.requests.contains(&focus_call("pane-c")));
 
     let before_swap = focused(
         tab_snapshot(vec![
@@ -3604,6 +3605,70 @@ fn pane_focused_coalesces_internal_swap_rebuild_and_scratch_focus_events() {
             .requests
             .contains(&move_call("pane-b", attach_destination("pane-a", "right")))
     );
+
+    let before = focused(tangled_snapshot(), "workspace-1", "tab-main", "pane-c");
+    let selected = focused(tangled_snapshot(), "workspace-1", "tab-main", "pane-b");
+    // Change selection before another move, then before the final position swap.
+    for checks_before_selection in [2, 7] {
+        let interrupted = tangled_herdr()
+            .with_snapshot(before.clone())
+            .with_replies(
+                "session.snapshot",
+                std::iter::repeat_n(snapshot_reply(before.clone()), 2)
+                    .chain(std::iter::repeat_n(
+                        snapshot_reply(focused(
+                            tangled_snapshot(),
+                            "workspace-1",
+                            "tab-main",
+                            "pane-d",
+                        )),
+                        checks_before_selection - 2,
+                    ))
+                    .chain([snapshot_reply(selected.clone())]),
+            )
+            .with_replies(
+                "pane.move",
+                [
+                    new_tab_reply_with_source(
+                        "tab-scratch",
+                        focused_layout(
+                            "tab-main",
+                            "pane-d",
+                            vec![
+                                pane("pane-a", 0, 0, 100, 100),
+                                pane("pane-b", 100, 0, 100, 50),
+                                pane("pane-d", 100, 50, 100, 50),
+                            ],
+                        ),
+                    ),
+                    move_reply(),
+                ],
+            );
+
+        let run = run_on_pane_focused(&interrupted, "tab-main", "pane-c");
+
+        assert!(run.assert_failure().contains("focus left pane-d"));
+        assert!(
+            !run.requests
+                .iter()
+                .any(|call| matches!(call.method.as_str(), "pane.focus" | "pane.swap"))
+        );
+        assert_eq!(run.requests.last(), Some(&snapshot_call()));
+        if checks_before_selection == 2 {
+            assert!(
+                run.requests
+                    .contains(&move_call("pane-c", attach_destination("pane-d", "right")))
+            );
+        } else {
+            assert_eq!(
+                run.requests
+                    .iter()
+                    .filter(|call| call.method == "pane.move")
+                    .count(),
+                6
+            );
+        }
+    }
 }
 
 #[test]
@@ -4264,10 +4329,8 @@ fn balance_brings_back_only_what_is_still_in_the_scratch_tab() {
 
 #[test]
 fn balance_puts_the_focus_back_on_the_pane_it_started_from() {
-    // The panes are all home by the time the resizing fails, but they moved through
-    // another tab to get there, so the focus still has to be put back -- and on the
-    // pane the user was in, which is not the anchor the rebuild hung everything off.
-    let herdr = tangled_herdr()
+    // Explicit balance keeps its existing best-effort focus restoration on failure.
+    let mut herdr = tangled_herdr()
         .with_replies(
             "layout.export",
             [
@@ -4287,7 +4350,25 @@ fn balance_puts_the_focus_back_on_the_pane_it_started_from() {
                 )),
             ],
         )
-        .with_replies("pane.move", [new_tab_reply("tab-scratch"), move_reply()])
+        .with_replies(
+            "pane.move",
+            [
+                new_tab_reply_with_source(
+                    "tab-scratch",
+                    focused_layout(
+                        "tab-main",
+                        "pane-a",
+                        vec![
+                            pane("pane-a", 0, 0, 100, 100),
+                            pane("pane-b", 100, 0, 100, 50),
+                            pane("pane-d", 100, 50, 100, 50),
+                        ],
+                    ),
+                ),
+                move_reply(),
+            ],
+        )
+        .with_replies("pane.swap", [swap_reply()])
         .with_replies(
             "layout.set_split_ratio",
             [Err("path is out of date".to_owned())],
@@ -4301,6 +4382,63 @@ fn balance_puts_the_focus_back_on_the_pane_it_started_from() {
          layout.set_split_ratio failed: path is out of date\n"
     );
     assert_eq!(run.requests.last(), Some(&focus_call("pane-c")));
+
+    herdr.replies.insert(
+        "pane.move".to_owned(),
+        [new_tab_reply("tab-scratch"), move_reply()]
+            .into_iter()
+            .collect(),
+    );
+    let missing_focus = run_balance(&herdr, "pane-c");
+    assert!(
+        missing_focus
+            .assert_failure()
+            .contains("without reporting its remaining focus")
+    );
+    assert!(
+        missing_focus
+            .requests
+            .contains(&move_call("pane-c", attach_destination("pane-a", "right")))
+    );
+    assert_eq!(missing_focus.requests.last(), Some(&focus_call("pane-c")));
+
+    for (reply, expected) in [
+        (Err("pane disappeared".to_owned()), "pane disappeared"),
+        (declined_swap_reply("not_found"), "not_found"),
+    ] {
+        herdr.replies.insert(
+            "pane.move".to_owned(),
+            [
+                new_tab_reply_with_source(
+                    "tab-scratch",
+                    focused_layout(
+                        "tab-main",
+                        "pane-d",
+                        vec![
+                            pane("pane-a", 0, 0, 100, 100),
+                            pane("pane-b", 100, 0, 100, 50),
+                            pane("pane-d", 100, 50, 100, 50),
+                        ],
+                    ),
+                ),
+                move_reply(),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        herdr
+            .replies
+            .insert("pane.swap".to_owned(), [reply].into_iter().collect());
+
+        let run = run_balance(&herdr, "pane-c");
+
+        assert!(run.assert_failure().contains(expected));
+        assert_eq!(run.requests.last(), Some(&focus_call("pane-c")));
+        assert!(!run.requests.iter().any(|call| {
+            call.method == "layout.set_split_ratio"
+                || (call.method == "pane.move" && call.params["pane_id"] == "pane-d")
+        }));
+    }
 }
 
 #[test]
