@@ -2900,14 +2900,19 @@ fn rejects_the_removed_pane_creation_alias() {
 }
 
 #[test]
-fn new_pane_completes_matching_three_column_rows_with_a_single_split() {
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 40, 20),
-        pane("pane-b", 40, 0, 40, 20),
-        pane("pane-c", 80, 0, 40, 20),
-        pane("pane-d", 0, 20, 60, 20),
-        pane("pane-e", 60, 20, 60, 20),
-    ]))
+fn new_pane_uses_the_live_focus_instead_of_completing_the_grid_elsewhere() {
+    let herdr = FakeHerdr::new(focused(
+        tab_snapshot(vec![
+            pane("pane-a", 0, 0, 40, 20),
+            pane("pane-b", 40, 0, 40, 20),
+            pane("pane-c", 80, 0, 40, 20),
+            pane("pane-d", 0, 20, 60, 20),
+            pane("pane-e", 60, 20, 60, 20),
+        ]),
+        "workspace-1",
+        "tab-main",
+        "pane-e",
+    ))
     .with_replies(
         "layout.export",
         [export_reply(split(
@@ -2922,51 +2927,68 @@ fn new_pane_completes_matching_three_column_rows_with_a_single_split() {
     )
     .with_replies("pane.split", [split_reply("pane-new")]);
 
-    let run = run_new_pane(&herdr, "pane-e");
+    let run = run_new_pane(&herdr, "pane-a");
     run.assert_success();
     assert_eq!(
         run.requests,
         [
             snapshot_call(),
             export_call(),
-            split_call("pane-d", "right")
+            split_call("pane-e", "right")
         ]
     );
 }
 
 #[test]
 fn new_pane_only_splits_in_the_existing_direction() {
-    // The focused pane is far taller than wide, but every split in the tab runs
-    // rightwards, so the new pane joins that row instead of starting a column.
-    let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 20, 100),
-        pane("pane-b", 20, 0, 80, 100),
-    ]))
-    .with_replies(
-        "layout.export",
-        [export_reply(split("right", leaf("pane-a"), leaf("pane-b")))],
-    )
-    .with_replies("pane.split", [split_reply("pane-new")]);
+    // Preserve one-way layouts even when the focused pane's aspect ratio favors
+    // the other direction. Both insert immediately after the focus.
+    for (direction, panes) in [
+        (
+            "right",
+            vec![
+                pane("pane-a", 0, 0, 20, 100),
+                pane("pane-b", 20, 0, 80, 100),
+            ],
+        ),
+        (
+            "down",
+            vec![
+                pane("pane-a", 0, 0, 100, 20),
+                pane("pane-b", 0, 20, 100, 80),
+            ],
+        ),
+    ] {
+        let herdr = FakeHerdr::new(tab_snapshot(panes))
+            .with_replies(
+                "layout.export",
+                [export_reply(split(
+                    direction,
+                    leaf("pane-a"),
+                    leaf("pane-b"),
+                ))],
+            )
+            .with_replies("pane.split", [split_reply("pane-new")]);
+        let run = run_new_pane(&herdr, "pane-a");
 
-    let run = run_new_pane(&herdr, "pane-a");
-
-    run.assert_success();
-    assert_eq!(
-        run.requests,
-        [
-            snapshot_call(),
-            export_call(),
-            split_call("pane-a", "right"),
-        ]
-    );
+        run.assert_success();
+        assert_eq!(
+            run.requests,
+            [
+                snapshot_call(),
+                export_call(),
+                split_call("pane-a", direction),
+            ]
+        );
+    }
 }
 
 #[test]
-fn new_pane_completes_a_two_by_two_grid_without_moving_existing_panes() {
+fn new_pane_follows_a_tall_focused_pane_before_its_row_neighbor() {
     let herdr = FakeHerdr::new(tab_snapshot(vec![
-        pane("pane-a", 0, 0, 100, 40),
-        pane("pane-b", 100, 0, 100, 40),
-        pane("pane-c", 0, 40, 200, 40),
+        pane("pane-a", 0, 0, 60, 40),
+        pane("pane-b", 60, 0, 60, 40),
+        pane("pane-c", 0, 40, 120, 40),
     ]))
     .with_replies(
         "layout.export",
@@ -2986,7 +3008,7 @@ fn new_pane_completes_a_two_by_two_grid_without_moving_existing_panes() {
         [
             snapshot_call(),
             export_call(),
-            split_call("pane-c", "right"),
+            split_call("pane-a", "right"),
         ]
     );
 }

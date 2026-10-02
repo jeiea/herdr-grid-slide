@@ -39,64 +39,80 @@ fn arranging_panes_across_tabs_and_workspaces_keeps_every_view_balanced_and_focu
     let a = terminal_id(&snapshot, &initial.root_pane_id);
     live.assert_scene(&snapshot, &a, &[vec![vec![&a]]]);
     let mut added = Vec::new();
-    for (stage, order) in [
-        ("add B", vec![0, 1]),
-        ("add C", vec![0, 2, 1]),
-        ("add D", vec![0, 2, 3, 1]),
-        ("add E", vec![0, 4, 2, 3, 1]),
-        ("add F", vec![0, 4, 2, 3, 5, 1]),
-    ] {
+    for stage in ["add B", "add C", "add D", "add E", "add F"] {
         let snapshot = live.step(stage, "new-pane", Some("pane.focused"));
         added.push(terminal_id(&snapshot, &focused_pane_id(&snapshot)));
         let terminals: Vec<_> = std::iter::once(a.as_str())
             .chain(added.iter().map(String::as_str))
             .collect();
-        live.assert_scene(
-            &snapshot,
-            added.last().unwrap(),
-            &[vec![order.iter().map(|&i| terminals[i]).collect()]],
-        );
+        live.assert_scene(&snapshot, added.last().unwrap(), &[vec![terminals]]);
     }
     let [b, c, d, e, f] = added.as_slice() else {
         panic!("five added panes")
     };
     let grid = live.last_snapshot.as_ref().unwrap();
-    // Matching left-nested splits under both root children prove two three-column rows.
-    let split_ids: Vec<_> = tab_layout(grid, &initial.tab_id)["splits"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|split| split["id"].as_str().unwrap())
-        .collect();
-    assert_eq!(
-        split_ids,
-        [
-            "split_0_root",
-            "split_1_0",
-            "split_2_00",
-            "split_3_1",
-            "split_4_10"
-        ]
-    );
     let layout = tab_layout(grid, &initial.tab_id).clone();
     let snapshot = live.step("explicit balance preserves grid", "balance", None);
     assert_eq!(tab_layout(&snapshot, &initial.tab_id), &layout);
-    live.assert_scene(&snapshot, f, &[vec![vec![&a, e, c, d, f, b]]]);
+    live.assert_scene(&snapshot, f, &[vec![vec![&a, b, c, d, e, f]]]);
     for (action, focused) in [
-        ("focus-left", d),
-        ("focus-up", &a),
-        ("focus-right", e),
-        ("focus-down", f),
+        ("focus-left", e),
+        ("focus-up", b),
+        ("focus-right", c),
+        ("focus-left", b),
     ] {
         let snapshot = live.step(action, action, Some("pane.focused"));
-        live.assert_scene(&snapshot, focused, &[vec![vec![&a, e, c, d, f, b]]]);
+        live.assert_scene(&snapshot, focused, &[vec![vec![&a, b, c, d, e, f]]]);
+    }
+    let snapshot = live.terminate(
+        "close unfocused F before inserting",
+        pane_by_terminal_id(&snapshot, f)["pane_id"]
+            .as_str()
+            .unwrap(),
+        false,
+    );
+    live.assert_scene(&snapshot, b, &[vec![vec![&a, b, c, d, e]]]);
+    let snapshot = live.step("add X after middle B", "new-pane", Some("pane.focused"));
+    let x = terminal_id(&snapshot, &focused_pane_id(&snapshot));
+    live.assert_scene(&snapshot, &x, &[vec![vec![&a, b, &x, c, d, e]]]);
+    let snapshot = live.terminate("close X", &focused_pane_id(&snapshot), false);
+    let survivor = terminal_id(&snapshot, &focused_pane_id(&snapshot));
+    live.assert_scene(&snapshot, &survivor, &[vec![vec![&a, b, c, d, e]]]);
+
+    live.begin_stage("select row end C");
+    let logs = live.plugin_log_ids().expect("logs before selecting C");
+    let pane = pane_by_terminal_id(&snapshot, b)["pane_id"]
+        .as_str()
+        .unwrap();
+    live.run_json(["pane", "focus", "--direction", "right", "--pane", pane])
+        .expect("select C");
+    live.wait_for_hooks(&logs, None).expect("selection hooks");
+    let snapshot = live.snapshot().expect("selected C");
+    live.assert_scene(&snapshot, c, &[vec![vec![&a, b, c, d, e]]]);
+    let snapshot = live.step("add F after row end C", "new-pane", Some("pane.focused"));
+    let f = &terminal_id(&snapshot, &focused_pane_id(&snapshot));
+    live.assert_scene(&snapshot, f, &[vec![vec![&a, b, c, f, d, e]]]);
+    for (stage, order) in [
+        ("move F past D", vec![&a, b, c, d, f, e]),
+        ("move F past E", vec![&a, b, c, d, e, f]),
+    ] {
+        let snapshot = live.step(stage, "move-right", None);
+        live.assert_scene(
+            &snapshot,
+            f,
+            &[vec![order.into_iter().map(String::as_str).collect()]],
+        );
+    }
+    for (action, focused) in [("focus-up", c), ("focus-down", f)] {
+        let snapshot = live.step(action, action, Some("pane.focused"));
+        live.assert_scene(&snapshot, focused, &[vec![vec![&a, b, c, d, e, f]]]);
     }
     let snapshot = live.step("move F left", "move-left", None);
-    live.assert_scene(&snapshot, f, &[vec![vec![&a, e, c, f, d, b]]]);
+    live.assert_scene(&snapshot, f, &[vec![vec![&a, b, c, d, f, e]]]);
     let snapshot = live.step("move F up", "move-up", None);
-    live.assert_scene(&snapshot, f, &[vec![vec![f, e, c, &a, d, b]]]);
+    live.assert_scene(&snapshot, f, &[vec![vec![&a, f, c, d, b, e]]]);
     let snapshot = live.step("detach F to next tab", "to-new-tab", None);
-    live.assert_scene(&snapshot, f, &[vec![vec![e, c, &a, d, b], vec![f]]]);
+    live.assert_scene(&snapshot, f, &[vec![vec![&a, c, d, b, e], vec![f]]]);
     assert_ne!(
         pane_rect(
             &snapshot,
@@ -105,12 +121,18 @@ fn arranging_panes_across_tabs_and_workspaces_keeps_every_view_balanced_and_focu
                 .as_str()
                 .unwrap()
         )["y"],
-        pane_rect(&snapshot, &initial.tab_id, &initial.root_pane_id)["y"],
+        pane_rect(
+            &snapshot,
+            &initial.tab_id,
+            pane_by_terminal_id(&snapshot, d)["pane_id"]
+                .as_str()
+                .unwrap(),
+        )["y"],
         "background tab must still have two panes in its top row"
     );
 
     // The headless single-pane center lands on a row boundary. Use the existing
-    // upper-half entry fixture to make the upper-right A unambiguous.
+    // upper-half entry fixture to make the upper-right D unambiguous.
     live.begin_stage("upper-half entry fixture");
     let detached = focused_pane_id(&snapshot);
     let auxiliary = live
@@ -119,34 +141,34 @@ fn arranging_panes_across_tabs_and_workspaces_keeps_every_view_balanced_and_focu
     let snapshot = live.snapshot().expect("entry fixture snapshot");
     let auxiliary_terminal = terminal_id(&snapshot, &auxiliary);
     let snapshot = live.step(
-        "enter balanced right edge A",
+        "enter balanced right edge D",
         "focus-left",
         Some("pane.focused"),
     );
     live.assert_scene(
         &snapshot,
-        &a,
-        &[vec![vec![e, c, &a, d, b], vec![f, &auxiliary_terminal]]],
+        d,
+        &[vec![vec![&a, c, d, b, e], vec![f, &auxiliary_terminal]]],
     );
     let snapshot = live.step("return to detached F", "focus-right", Some("pane.focused"));
     live.assert_scene(
         &snapshot,
         f,
-        &[vec![vec![e, c, &a, d, b], vec![f, &auxiliary_terminal]]],
+        &[vec![vec![&a, c, d, b, e], vec![f, &auxiliary_terminal]]],
     );
     let snapshot = live.terminate("close unfocused auxiliary through API", &auxiliary, false);
-    live.assert_scene(&snapshot, f, &[vec![vec![e, c, &a, d, b], vec![f]]]);
+    live.assert_scene(&snapshot, f, &[vec![vec![&a, c, d, b, e], vec![f]]]);
     let snapshot = live.step(
         "move F into previous tab",
         "move-left",
         Some("pane.focused"),
     );
-    live.assert_scene(&snapshot, f, &[vec![vec![e, c, f, &a, d, b]]]);
+    live.assert_scene(&snapshot, f, &[vec![vec![&a, c, f, d, b, e]]]);
     let snapshot = live.terminate("exit focused F", &focused_pane_id(&snapshot), true);
     let survivor = terminal_id(&snapshot, &focused_pane_id(&snapshot));
-    live.assert_scene(&snapshot, &survivor, &[vec![vec![e, c, &a, d, b]]]);
+    live.assert_scene(&snapshot, &survivor, &[vec![vec![&a, c, d, b, e]]]);
 
-    let remaining: Vec<&str> = [e, c, &a, d, b]
+    let remaining: Vec<&str> = [&a, c, d, b, e]
         .into_iter()
         .map(String::as_str)
         .filter(|id| *id != survivor)

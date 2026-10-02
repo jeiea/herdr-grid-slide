@@ -1099,7 +1099,7 @@ fn balance_destination_before_entry(
     Ok(())
 }
 
-/// Grows the standard grid with one split when possible, otherwise splits the focused pane.
+/// Inserts after the focused pane in reading order, which automatic balance preserves.
 fn create_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
     let pane = prepare_pane_action(context, client)?;
     request_pane_split(client, &pane.pane_id, pane.split_direction)?;
@@ -1112,7 +1112,7 @@ fn prepare_pane_action(context: &Context, client: &mut SocketClient) -> Result<P
     let navigation = navigation_context(context, &snapshot);
     let tab_id = navigation.tab_id;
     let snapshot_layout = find_layout(&snapshot, tab_id)?;
-    let pane = find_pane(snapshot_layout, navigation.pane_id)?;
+    find_pane(snapshot_layout, navigation.pane_id)?;
     let layout = read_layout(client, tab_id)?;
     if !holds_the_same_panes(snapshot_layout, &layout.root) {
         return Err(format!(
@@ -1129,12 +1129,16 @@ fn prepare_pane_action(context: &Context, client: &mut SocketClient) -> Result<P
         snapshot_layout.panes.len() + 1,
         layout_bounds(snapshot_layout)?,
     )?;
-    if let Ok(Some(action)) = single_grid_split(&layout.root, &rows) {
-        return Ok(action);
-    }
+    // In a mixed layout, splitting down can put the new pane after the rest of
+    // the row. Splitting right keeps it immediately after the focused pane.
+    let direction = if snapshot_layout.panes.len() == 1 && rows.len() > 1 {
+        SplitDirection::Down
+    } else {
+        uniform_direction(&layout.root).unwrap_or(SplitDirection::Right)
+    };
     Ok(PaneAction {
         pane_id: navigation.pane_id.to_owned(),
-        split_direction: split_direction(&layout.root, pane),
+        split_direction: direction,
     })
 }
 
@@ -2094,77 +2098,6 @@ fn holds_the_same_panes(layout: &TabLayout, root: &LayoutNode) -> bool {
     snapshot_ids.sort_unstable();
     layout_ids.sort_unstable();
     snapshot_ids == layout_ids
-}
-
-/// Find the one leaf whose split would produce the same shape as join_evenly.
-/// A mismatch needing moves is left to the existing balance path; never rebuild
-/// just to normalize nesting. Pane order is preserved by inserting after that leaf.
-fn single_grid_split(
-    node: &LayoutNode,
-    rows: &[usize],
-) -> std::result::Result<Option<PaneAction>, ()> {
-    if rows == [1] {
-        return match node {
-            LayoutNode::Pane { .. } => Ok(None),
-            LayoutNode::Split { .. } => Err(()),
-        };
-    }
-    let direction = if rows.len() > 1 {
-        SplitDirection::Down
-    } else {
-        SplitDirection::Right
-    };
-    if let LayoutNode::Pane { pane_id } = node {
-        return if rows.iter().sum::<usize>() == 2 {
-            Ok(Some(PaneAction {
-                pane_id: pane_id.clone(),
-                split_direction: direction,
-            }))
-        } else {
-            Err(())
-        };
-    }
-    let LayoutNode::Split {
-        direction: actual,
-        first,
-        second,
-    } = node
-    else {
-        unreachable!()
-    };
-    if *actual != direction {
-        return Err(());
-    }
-    let (left, right) = if rows.len() > 1 {
-        let middle = rows.len().div_ceil(2);
-        (
-            single_grid_split(first, &rows[..middle])?,
-            single_grid_split(second, &rows[middle..])?,
-        )
-    } else {
-        let middle = rows[0].div_ceil(2);
-        (
-            single_grid_split(first, &[middle])?,
-            single_grid_split(second, &[rows[0] - middle])?,
-        )
-    };
-    match (left, right) {
-        (None, action) | (action, None) => Ok(action),
-        (Some(_), Some(_)) => Err(()),
-    }
-}
-
-fn split_direction(root: &LayoutNode, pane: &LayoutPane) -> SplitDirection {
-    if let Some(direction) = uniform_direction(root) {
-        return direction;
-    }
-    // Terminal cells are roughly twice as tall as they are wide, so a pane only
-    // looks wide once its width passes twice its height.
-    if pane.rect.width > pane.rect.height * 2.0 {
-        SplitDirection::Right
-    } else {
-        SplitDirection::Down
-    }
 }
 
 /// The direction every split of the tab shares, if the tab grows only one way.
