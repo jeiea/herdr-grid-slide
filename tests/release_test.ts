@@ -7,15 +7,14 @@ const root = fileURLToPath(new URL("../", import.meta.url));
 const mainSha = "a".repeat(40);
 const releaseSha = "b".repeat(40);
 const runUrl = "https://github.com/example/plugin/actions/runs/123";
+const runId = 123;
 
-Deno.test("releasing main requires its latest CI run to pass without rerunning tests", async () => {
+Deno.test("releasing main waits for its latest CI run and proceeds only after success", async () => {
   const fixture = await prepare();
   try {
     for (
       const result of [
         [],
-        [{ status: "queued", conclusion: "", url: runUrl }],
-        [{ status: "in_progress", conclusion: "", url: runUrl }],
         [{ status: "completed", conclusion: "failure", url: runUrl }],
         [{ status: "completed", conclusion: "cancelled", url: runUrl }],
         [{ status: "completed", conclusion: "skipped", url: runUrl }],
@@ -41,6 +40,29 @@ Deno.test("releasing main requires its latest CI run to pass without rerunning t
       ["workflow", "run", "release.yml", "--ref", "main"],
     ]);
     assert(new TextDecoder().decode(output.stdout).includes(runUrl));
+    for (const status of ["queued", "in_progress"]) {
+      const pending = [{
+        databaseId: runId,
+        status,
+        conclusion: "",
+        url: runUrl,
+      }];
+      const successful = await fixture.release([], pending);
+      assert.equal(successful.output.code, 0);
+      assert.deepEqual(successful.calls, [
+        mainLookup(),
+        ciLookup(mainSha),
+        ciWatch(),
+        ["workflow", "run", "release.yml", "--ref", "main"],
+      ]);
+      const failed = await fixture.release([], pending, { watchExitCode: 1 });
+      assert.equal(failed.output.code, 1);
+      assert.deepEqual(failed.calls, [
+        mainLookup(),
+        ciLookup(mainSha),
+        ciWatch(),
+      ]);
+    }
   } finally {
     await fixture.cleanup();
   }
@@ -60,6 +82,25 @@ Deno.test("a release checks its own commit and blocks missing results or lookup 
     ], successful);
     assert.equal(output.code, 0, new TextDecoder().decode(output.stderr));
     assert.deepEqual(calls, [ciLookup(releaseSha)]);
+
+    const pending = [{
+      databaseId: runId,
+      status: "in_progress",
+      conclusion: "",
+      url: runUrl,
+    }];
+    const waited = await fixture.release(["--check", releaseSha], pending);
+    assert.equal(waited.output.code, 0);
+    assert.deepEqual(waited.calls, [ciLookup(releaseSha), ciWatch()]);
+    const interrupted = await fixture.release(
+      ["--check", releaseSha],
+      pending,
+      {
+        watchExitCode: 42,
+      },
+    );
+    assert.equal(interrupted.output.code, 42);
+    assert.deepEqual(interrupted.calls, [ciLookup(releaseSha), ciWatch()]);
 
     const missing = await fixture.release(["--check", releaseSha], []);
     assert.equal(missing.output.success, false);
@@ -105,8 +146,12 @@ function ciLookup(sha: string) {
     "--limit",
     "1",
     "--json",
-    "status,conclusion,url",
+    "databaseId,status,conclusion,url",
   ];
+}
+
+function ciWatch() {
+  return ["run", "watch", String(runId), "--exit-status"];
 }
 
 async function prepare() {
@@ -119,9 +164,11 @@ async function prepare() {
     tool,
     `await Deno.writeTextFile(Deno.env.get("TEST_GH_CALLS"), JSON.stringify(Deno.args) + "\\n", { append: true });
 if (Deno.args[0] === "api") console.log(${JSON.stringify(mainSha)});
-else if (Deno.args[0] === "run") {
+else if (Deno.args[0] === "run" && Deno.args[1] === "list") {
   Deno.exitCode = Number(Deno.env.get("TEST_GH_ERROR"));
   console.log(Deno.env.get("TEST_GH_RUNS"));
+} else if (Deno.args[0] === "run" && Deno.args[1] === "watch") {
+  Deno.exitCode = Number(Deno.env.get("TEST_GH_WATCH_EXIT_CODE"));
 } else if (Deno.args[0] !== "workflow") Deno.exit(99);
 `,
   );
@@ -130,7 +177,7 @@ else if (Deno.args[0] === "run") {
     async release(
       args: string[],
       runs: unknown,
-      options: { error?: number } = {},
+      options: { error?: number; watchExitCode?: number } = {},
     ) {
       await Deno.writeTextFile(callsPath, "");
       const output = await new Deno.Command(Deno.execPath(), {
@@ -141,6 +188,7 @@ else if (Deno.args[0] === "run") {
           TEST_GH_CALLS: callsPath,
           TEST_GH_RUNS: JSON.stringify(runs),
           TEST_GH_ERROR: String(options.error ?? 0),
+          TEST_GH_WATCH_EXIT_CODE: String(options.watchExitCode ?? 0),
         },
       }).output();
       const recorded = await Deno.readTextFile(callsPath);

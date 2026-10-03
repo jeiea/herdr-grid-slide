@@ -28,11 +28,19 @@ async function main() {
       "--limit",
       "1",
       "--json",
-      "status,conclusion,url",
+      "databaseId,status,conclusion,url",
     ]),
   );
   if (!result) throw new Error(`CI has not run for ${sha} on main.`);
-  if (result.status !== "completed" || result.conclusion !== "success") {
+  if (result.status !== "completed") {
+    console.log(`Waiting for CI for ${sha}: ${result.url}`);
+    await run("gh", [
+      "run",
+      "watch",
+      String(result.databaseId),
+      "--exit-status",
+    ]);
+  } else if (result.conclusion !== "success") {
     throw new Error(
       `CI must pass for ${sha}: ${result.status}/${result.conclusion} ${result.url}`,
     );

@@ -1,6 +1,6 @@
 # Before dispatching from the default branch:
-# 1. `mise run bump -- <MAJOR.MINOR.PATCH>`; CI must pass on the release commit
-#    on Linux, macOS, and Windows x64 before `mise run release`.
+# 1. `mise run bump -- <MAJOR.MINOR.PATCH>`; `mise run release` waits for CI
+#    on the release commit to pass on Linux, macOS, and Windows x64.
 # 2. `mise run live-herdr` with Herdr 0.8.2 and with
 #    `HERDR_TEST_VERSION='herdr 0.9.0'`.
 # 3. Run the manual connected-client checks described in tests/live_herdr_test.rs.
