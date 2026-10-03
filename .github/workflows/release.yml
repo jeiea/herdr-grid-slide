@@ -1,6 +1,6 @@
 # Before dispatching from the default branch:
-# 1. `mise run bump -- <MAJOR.MINOR.PATCH>` and `mise run check`; CI must pass on
-#    Linux, macOS, and Windows x64.
+# 1. `mise run bump -- <MAJOR.MINOR.PATCH>`; CI must pass on the release commit
+#    on Linux, macOS, and Windows x64 before `mise run release`.
 # 2. `mise run live-herdr` with Herdr 0.8.2 and with
 #    `HERDR_TEST_VERSION='herdr 0.9.0'`.
 # 3. Run the manual connected-client checks described in tests/live_herdr_test.rs.
@@ -14,6 +14,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: read
   contents: read
 
 concurrency:
@@ -32,29 +33,27 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
-      - name: Install Rust 1.97.1
-        run: |
-          rustup toolchain install 1.97.1 --profile minimal --component rustfmt,clippy
-          rustup default 1.97.1
-      - name: Install configured ShellCheck and Deno
+      - name: Install configured Deno
         uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
         with:
           version: 2026.9.12
-          install_args: shellcheck deno
+          install_args: deno
       - name: Require public repository and default branch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .visibility)" = public
           test "$(gh api "repos/$GITHUB_REPOSITORY" --jq .default_branch)" = "$GITHUB_REF_NAME"
+      - name: Require passing CI for the release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: deno run -A scripts/release.ts --check "$GITHUB_SHA"
       - name: Verify version and unused tag
         id: version
         run: |
           version=$(./scripts/check-version.sh --release)
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
-      - name: Run release quality gate
-        run: ./.mise/tasks/check.sh
 
   build:
     name: Build ${{ matrix.target }}
@@ -95,15 +94,6 @@ jobs:
           CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
           CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER: musl-gcc
         run: cargo build --locked --release --target "${{ matrix.target }}"
-      - name: Install configured Deno
-        if: runner.os == 'Windows'
-        uses: jdx/mise-action@9149ea85001c7435d5a66bb127d6a1b6227cb0a5 # v5.0.0
-        with:
-          version: 2026.9.12
-          install_args: deno
-      - name: Test Windows transport and installer
-        if: runner.os == 'Windows'
-        run: cargo test --locked
       - name: Smoke test and stage asset
         env:
           TARGET: ${{ matrix.target }}

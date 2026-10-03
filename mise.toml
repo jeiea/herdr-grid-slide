@@ -5,5 +5,5 @@ shellcheck = "0.11.0"
 vhs = "latest"
 
 [tasks.release]
-description = "Dispatch the release workflow from main"
-run = "gh workflow run release.yml --ref main"
+description = "Require passing CI before dispatching the release workflow from main"
+run = "deno run -A scripts/release.ts"

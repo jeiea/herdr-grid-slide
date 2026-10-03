@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import { delimiter, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { writeFakeCommand } from "./support/fake-command.ts";
 
 Deno.test("invalid recordings preserve the validation status and remove their isolated session files", async () => {
   const temporary = await Deno.makeTempDir({ prefix: "grid-slide demo test " });
@@ -34,18 +35,7 @@ Deno.test("invalid recordings preserve the validation status and remove their is
     );
     const fixture = join(root, "tests/fixtures/demo-tools.ts");
     for (const name of ["cargo", "vhs"]) {
-      const command = join(tools, name + (windows ? ".cmd" : ""));
-      const quote = (value: string) =>
-        "'" + value.replaceAll("'", "'\\''") + "'";
-      await Deno.writeTextFile(
-        command,
-        windows
-          ? `@echo off\r\n"${Deno.execPath()}" run -A "${fixture}" ${name} %*\r\n`
-          : `#!/bin/sh\nexec ${quote(Deno.execPath())} run -A ${
-            quote(fixture)
-          } ${name} "$@"\n`,
-      );
-      if (!windows) await Deno.chmod(command, 0o755);
+      await writeFakeCommand(join(tools, name), [fixture, name]);
     }
     const demoPath = join(temporary, "demo-path");
     const output = await new Deno.Command(Deno.execPath(), {
