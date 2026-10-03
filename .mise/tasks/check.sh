@@ -1,4 +1,5 @@
 #!/bin/sh
+#MISE description="Run version checks, formatting, linting, tests, and a release build"
 set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)

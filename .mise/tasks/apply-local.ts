@@ -1,4 +1,5 @@
 #!/usr/bin/env -S deno run -A
+//MISE description="Build and apply the local plugin, then reload Herdr configuration"
 import { join } from "node:path";
 import { binary, reportError, root, run, windows } from "../../scripts/task.ts";
 

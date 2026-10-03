@@ -1,4 +1,5 @@
 #!/bin/sh
+#MISE description="Run live tests with the official Herdr 0.8.0 build on macOS arm64"
 set -eu
 
 ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/../.." && pwd)

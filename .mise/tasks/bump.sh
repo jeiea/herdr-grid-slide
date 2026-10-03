@@ -1,4 +1,5 @@
 #!/bin/sh
+#MISE description="Update the plugin and Cargo versions to MAJOR.MINOR.PATCH"
 set -eu
 
 if [ "$#" -ne 1 ]; then

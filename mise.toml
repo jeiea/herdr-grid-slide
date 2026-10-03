@@ -7,3 +7,10 @@ vhs = "latest"
 [tasks.release]
 description = "Require passing CI before dispatching the release workflow from main"
 run = "deno run -A scripts/release.ts"
+
+[tasks.install-release]
+description = "Reinstall the latest published Grid Slide release in Herdr"
+run = [
+  "herdr plugin uninstall jeiea.grid-slide",
+  'herdr plugin install jeiea/herdr-grid-slide --ref "{{ exec(command="gh release view --repo jeiea/herdr-grid-slide --json tagName --jq .tagName") | trim }}" --yes',
+]
