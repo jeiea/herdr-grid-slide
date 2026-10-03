@@ -433,7 +433,8 @@ fn run() -> Result<()> {
 
     let context = read_context(matches!(
         command,
-        Command::Focus(_)
+        Command::Balance
+            | Command::Focus(_)
             | Command::MoveDirectionally(_)
             | Command::MoveTabWorkspace(_)
             | Command::Move {
@@ -1147,6 +1148,7 @@ fn prepare_pane_action(context: &Context, client: &mut SocketClient) -> Result<P
 /// wrong cell are swapped into place, so running this twice changes nothing the
 /// second time. Anything else has to be taken apart and rebuilt.
 fn balance(context: &Context, client: &mut SocketClient) -> Result<()> {
+    let _lock = lock_balance(context)?;
     let snapshot = read_snapshot(client)?;
     let navigation = navigation_context(context, &snapshot);
     let snapshot_layout = find_layout(&snapshot, navigation.tab_id)?;
@@ -1173,8 +1175,8 @@ fn balance_focused_pane(
     )
 }
 
-/// The lock every hook and tab-scoped move takes before reading the session, held
-/// for as long as the value lives.
+/// Shared by hooks, manual balancing and tab-scoped moves before reading the
+/// session, and held for as long as the value lives.
 struct BalanceLock<'a> {
     state_dir: &'a Path,
     _file: File,

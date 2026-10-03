@@ -482,11 +482,21 @@ fn closing_focused_and_unfocused_panes_through_the_api_balances_multiple_survivo
         .expect("select A");
     live.run_json(["pane", "focus", "--direction", "right", "--pane", &c])
         .expect("return to D from A");
+    // Older Herdr versions return by pane order, newer ones remember the previous
+    // selection. Observe the native close before linking the plugin.
+    live.close_pane(&d).expect("observe native return from D");
+    let native_return = focused_pane_id(&live.snapshot().expect("native return snapshot"));
+    let d = live.split_pane(&c, "right", true).expect("recreate D");
+    live.run_json(["pane", "focus", "--direction", "left", "--pane", &b])
+        .expect("select A again");
+    live.run_json(["pane", "focus", "--direction", "right", "--pane", &c])
+        .expect("return to D from A again");
     let before = live.snapshot().expect("row before balancing");
     let a_terminal = terminal_id(&before, &fixture.root_pane_id);
     let b_terminal = terminal_id(&before, &b);
     let c_terminal = terminal_id(&before, &c);
     let d_terminal = terminal_id(&before, &d);
+    let return_terminal = terminal_id(&before, &native_return);
     live.link_plugin().expect("link copied plugin");
     let balanced = live.step("balance after selecting A then D", "balance", None);
     live.assert_scene(
@@ -499,12 +509,17 @@ fn closing_focused_and_unfocused_panes_through_the_api_balances_multiple_survivo
             &d_terminal,
         ]]],
     );
-    let after = live.terminate("close D and return to the user's A", &d, false);
+    let after = live.terminate("close D and keep Herdr's native return target", &d, false);
     live.assert_scene(
         &after,
-        &a_terminal,
+        &return_terminal,
         &[vec![vec![&a_terminal, &b_terminal, &c_terminal]]],
     );
+    let logs = live.plugin_log_ids().expect("logs before selecting A");
+    live.run_json(["pane", "focus", "--direction", "left", "--pane", &b])
+        .expect("select A before unfocused closes");
+    live.wait_for_hooks(&logs, None)
+        .expect("settle A before unfocused closes");
     let after = live.terminate("close unfocused C", &c, false);
     live.assert_scene(&after, &a_terminal, &[vec![vec![&a_terminal, &b_terminal]]]);
     let after = live.terminate("close unfocused B", &b, false);
@@ -539,6 +554,13 @@ fn closing_focused_and_unfocused_panes_through_the_api_balances_multiple_survivo
         &focused,
         &[vec![terminals.iter().map(String::as_str).collect()]],
     );
+    let logs = live
+        .plugin_log_ids()
+        .expect("logs before selecting the left pane");
+    live.run_json(["pane", "focus", "--direction", "left", "--pane", &survivor])
+        .expect("select the left pane before creating another");
+    live.wait_for_hooks(&logs, None)
+        .expect("settle the left pane before creating another");
     let before = live.step(
         "add a third pane before unfocused close",
         "new-pane",

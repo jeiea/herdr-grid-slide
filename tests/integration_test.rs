@@ -1677,14 +1677,14 @@ fn failed_preparation_or_entry_keeps_the_previous_balance_record() {
 }
 
 #[test]
-fn directional_entry_waits_for_a_running_hook_before_reading_the_layout() {
-    for command in ["focus", "move"] {
-        let herdr = FakeHerdr::new(reordered_tab_snapshot());
+fn manual_arrangement_and_tab_entry_wait_for_automatic_arrangement() {
+    for arguments in [&["focus", "left"][..], &["move", "left"], &["balance"]] {
+        let herdr = FakeHerdr::new(reordered_tab_snapshot())
+            .with_replies("layout.export", [export_reply(leaf("pane-a"))]);
         herdr.warm_up_binary();
         let held = herdr.hold_balance_lock();
         let run = thread::scope(|scope| {
-            let run =
-                scope.spawn(|| herdr.run("workspace-1", "tab-a", "pane-a", &[command, "left"]));
+            let run = scope.spawn(|| herdr.run("workspace-1", "tab-a", "pane-a", arguments));
             thread::sleep(Duration::from_millis(300));
             drop(held);
             run.join().unwrap()
