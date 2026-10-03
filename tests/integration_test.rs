@@ -2886,6 +2886,37 @@ fn reports_the_herdr_error_that_rejected_an_action() {
 }
 
 #[test]
+fn reports_its_build_version_without_a_running_herdr_session() {
+    let output = ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-grid-slide"))
+        .arg("--version")
+        .env_clear()
+        .output()
+        .unwrap();
+
+    let version = if option_env!("HERDR_GRID_SLIDE_RELEASE") == Some("1") {
+        env!("CARGO_PKG_VERSION").to_owned()
+    } else {
+        let revision = ProcessCommand::new("git")
+            .args(["rev-parse", "--short=12", "HEAD"])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .unwrap();
+        assert!(revision.status.success());
+        format!(
+            "{}-dev+{}",
+            env!("CARGO_PKG_VERSION"),
+            String::from_utf8_lossy(&revision.stdout).trim()
+        )
+    };
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        format!("herdr-grid-slide {version}\n")
+    );
+}
+
+#[test]
 fn rejects_the_removed_pane_creation_alias() {
     let output = ProcessCommand::new(env!("CARGO_BIN_EXE_herdr-grid-slide"))
         .arg("split-pane")

@@ -48,6 +48,7 @@ enum SplitDirection {
 }
 
 enum Command {
+    Version,
     Move {
         direction: MoveDirection,
         scope: Scope,
@@ -427,6 +428,10 @@ fn main() {
 
 fn run() -> Result<()> {
     let command = parse_arguments(env::args().skip(1))?;
+    if matches!(command, Command::Version) {
+        println!("herdr-grid-slide {}", env!("HERDR_GRID_SLIDE_VERSION"));
+        return Ok(());
+    }
     if matches!(command, Command::OnPaneFocused) {
         return run_pane_focus_hook();
     }
@@ -458,7 +463,9 @@ fn run() -> Result<()> {
         }
         Command::MoveWorkspace(direction) => move_workspace(&context, direction, &mut client),
         Command::CreatePane => create_pane(&context, &mut client),
-        Command::OnPaneFocused => unreachable!("pane focus hook is handled before context"),
+        Command::Version | Command::OnPaneFocused => {
+            unreachable!("version and pane focus hook are handled before context")
+        }
         Command::Balance => balance(&context, &mut client),
     }
 }
@@ -467,6 +474,7 @@ fn parse_arguments(args: impl Iterator<Item = String>) -> Result<Command> {
     let args: Vec<_> = args.collect();
     match args.as_slice() {
         [operation] => match operation.as_str() {
+            "--version" => Ok(Command::Version),
             "new-tab" => Ok(Command::CreateTab),
             "new-workspace" => Ok(Command::CreateWorkspace),
             "new-pane" => Ok(Command::CreatePane),
@@ -523,7 +531,7 @@ fn parse_pane_direction(direction: &str) -> Result<PaneDirection> {
 }
 
 fn usage() -> String {
-    "usage: herdr-grid-slide <workspace|tab> <next|previous> | move-workspace <next|previous> | move-tab-workspace <next|previous> | <focus|move> <direction> | new-tab | new-workspace | to-new-tab | to-new-workspace | tab-to-new-workspace | new-pane | balance | on-pane-focused".into()
+    "usage: herdr-grid-slide <workspace|tab> <next|previous> | move-workspace <next|previous> | move-tab-workspace <next|previous> | <focus|move> <direction> | new-tab | new-workspace | to-new-tab | to-new-workspace | tab-to-new-workspace | new-pane | balance | on-pane-focused | --version".into()
 }
 
 fn read_context(needs_state_dir: bool) -> Result<Context> {

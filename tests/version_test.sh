@@ -67,14 +67,10 @@ cp "$ROOT/src/main.rs" "$TAGGED/src/main.rs"
     exit 1
   fi
   printf '\n// release input changed\n' >>src/main.rs
-  if ./scripts/check-version.sh; then
-    echo "changed release inputs unexpectedly reused a version" >&2
-    exit 1
-  fi
-  git restore src/main.rs
   printf '\n# release input changed\n' >>scripts/build-plugin.ps1
-  if ./scripts/check-version.sh; then
-    echo "changed Windows installer unexpectedly reused a version" >&2
+  ./scripts/check-version.sh
+  if ./scripts/check-version.sh --release; then
+    echo "development changes unexpectedly allowed reusing a release tag" >&2
     exit 1
   fi
 )
