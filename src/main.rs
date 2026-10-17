@@ -1106,6 +1106,7 @@ fn balance_destination_before_entry(
     balance_automatic_layout(
         client,
         layout,
+        reading_order(layout),
         tab_id,
         workspace_id_for_tab(snapshot, tab_id)?,
         layout
@@ -1245,6 +1246,12 @@ fn balance_focused_pane_locked(
     let state_dir = lock.state_dir;
     let mut previous = read_balance_focus_state(state_dir)?;
     let mut failures = Vec::new();
+    // A pass stopped halfway leaves panes where its moves happened to put them, so
+    // the order it was heading for is kept and resumed once if the panes no longer
+    // show it, even when nothing else changed. It lives only as long as this hook,
+    // so an arrangement made outside the plugin later on is never overruled by it.
+    let mut interrupted = Vec::new();
+    let mut resume = false;
     loop {
         let snapshot = read_snapshot(client)?;
         let Some(tab_id) = snapshot.focused_tab_id.as_deref() else {
@@ -1262,7 +1269,13 @@ fn balance_focused_pane_locked(
             .take()
             .filter(|(expected, _)| *expected == tab_id)
             .map(|(_, policy)| policy);
-        if focus_policy.is_none() && previous.as_ref() == Some(&observed) {
+        let resuming = std::mem::take(&mut resume)
+            && snapshot_layout.is_some_and(|layout| {
+                reading_order(layout)
+                    .into_iter()
+                    .ne(interrupted.iter().map(String::as_str))
+            });
+        if focus_policy.is_none() && !resuming && previous.as_ref() == Some(&observed) {
             break;
         }
         write_state_file(state_dir, BALANCE_FOCUS_STATE_FILE, &observed)?;
@@ -1280,15 +1293,23 @@ fn balance_focused_pane_locked(
         let Some(focus_pane_id) = snapshot.focused_pane_id.as_deref() else {
             continue;
         };
-        if let Err(error) = balance_automatic_layout(
+        let order = resumed_order(reading_order(snapshot_layout), &interrupted);
+        let attempted = order.iter().map(|pane| pane.to_string()).collect();
+        match balance_automatic_layout(
             client,
             snapshot_layout,
+            order,
             tab_id,
             workspace_id,
             focus_pane_id,
             focus_policy.unwrap_or(BalanceFocusPolicy::Automatic),
         ) {
-            failures.push(format!("could not automatically balance {tab_id}: {error}"));
+            Ok(()) => interrupted.clear(),
+            Err(error) => {
+                failures.push(format!("could not automatically balance {tab_id}: {error}"));
+                interrupted = attempted;
+                resume = !resuming;
+            }
         }
     }
 
@@ -1321,7 +1342,7 @@ fn balance_layout(
         client,
         snapshot_layout,
         &layout,
-        tab_id,
+        reading_order(snapshot_layout),
         workspace_id,
         focus_pane_id,
         focus_policy,
@@ -1331,6 +1352,7 @@ fn balance_layout(
 fn balance_automatic_layout(
     client: &mut SocketClient,
     snapshot_layout: &TabLayout,
+    order: Vec<&str>,
     tab_id: &str,
     workspace_id: &str,
     focus_pane_id: &str,
@@ -1349,7 +1371,7 @@ fn balance_automatic_layout(
         client,
         snapshot_layout,
         &layout,
-        tab_id,
+        order,
         workspace_id,
         focus_pane_id,
         focus_policy,
@@ -1360,12 +1382,12 @@ fn balance_exported_layout(
     client: &mut SocketClient,
     snapshot_layout: &TabLayout,
     layout: &ExportedLayout,
-    tab_id: &str,
+    order: Vec<&str>,
     workspace_id: &str,
     focus_pane_id: &str,
     focus_policy: BalanceFocusPolicy<'_>,
 ) -> Result<()> {
-    let order = reading_order(snapshot_layout);
+    let tab_id = snapshot_layout.tab_id.as_str();
     if order.len() < 2 {
         return Ok(());
     }
@@ -1413,7 +1435,8 @@ fn sort_grid(
             json!({"source_pane_id": source, "target_pane_id": target}),
         );
         if let Err(error) = swap {
-            return Err(with_focus_restored(client, plan, index > 0, error));
+            let swapped = index.checked_sub(1).map(|last| swaps[last].0);
+            return Err(with_focus_restored(client, plan, swapped, error));
         }
     }
     for (path, ratio) in grid_ratios(root, grid, plan.bounds) {
@@ -1422,7 +1445,8 @@ fn sort_grid(
             json!({"tab_id": plan.tab_id, "path": path, "ratio": ratio}),
         );
         if let Err(error) = resize {
-            return Err(with_focus_restored(client, plan, !swaps.is_empty(), error));
+            let swapped = swaps.last().map(|(source, _)| *source);
+            return Err(with_focus_restored(client, plan, swapped, error));
         }
     }
     if let Some((source, _)) = swaps.last() {
@@ -1482,7 +1506,7 @@ fn rebuild_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
             // Without the tab id there is nowhere to fetch the pane back from, so
             // name it rather than leave the user hunting for it.
             let error = format!("herdr moved {pane} to a new tab without saying which one");
-            return Err(with_focus_back(client, plan, error));
+            return Err(with_focus_back(client, plan, anchor, error));
         }
         if Some(pane) == staged_focus {
             anchor = plan
@@ -1553,7 +1577,7 @@ fn rebuild_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
             }
             None => Ok(()),
         },
-        Err(error) => Err(with_focus_back(client, plan, error)),
+        Err(error) => Err(with_focus_back(client, plan, anchor, error)),
     }
 }
 
@@ -1681,11 +1705,34 @@ fn attachment(tab_id: &str, target_pane_id: &str, direction: SplitDirection) -> 
 }
 
 /// Hands back a failure with the focus put where it started, best effort.
-fn with_focus_back(client: &mut SocketClient, plan: &GridPlan, error: String) -> String {
-    if plan.focus_policy == BalanceFocusPolicy::Explicit {
-        let _ = client.request("pane.focus", json!({"pane_id": plan.focus_pane_id}));
-    }
+fn with_focus_back(
+    client: &mut SocketClient,
+    plan: &GridPlan,
+    anchor: &str,
+    error: String,
+) -> String {
+    hand_focus_back(client, plan, anchor);
     error
+}
+
+/// herdr focuses the anchor a rebuild works around and the source of every swap, so
+/// a failure that leaves the focus on that pane hands it back to the one the pass
+/// started from. A focus someone moved elsewhere in the meantime is theirs to keep.
+fn hand_focus_back(client: &mut SocketClient, plan: &GridPlan, left_focused: &str) {
+    match plan.focus_policy {
+        BalanceFocusPolicy::Explicit => {}
+        BalanceFocusPolicy::BeforeEntry(_) => return,
+        BalanceFocusPolicy::Automatic | BalanceFocusPolicy::DirectionalEntry(..) => {
+            let still_left = left_focused != plan.focus_pane_id
+                && read_snapshot(client).is_ok_and(|snapshot| {
+                    snapshot.focused_pane_id.as_deref() == Some(left_focused)
+                });
+            if !still_left {
+                return;
+            }
+        }
+    }
+    let _ = client.request("pane.focus", json!({"pane_id": plan.focus_pane_id}));
 }
 
 /// Moves one pane and insists that herdr actually moved it: a refused move comes back
@@ -1764,9 +1811,7 @@ fn recovered(
         return error;
     };
     let stranded = bring_home(client, plan, anchor, scratch);
-    if plan.focus_policy == BalanceFocusPolicy::Explicit {
-        let _ = client.request("pane.focus", json!({"pane_id": plan.focus_pane_id}));
-    }
+    hand_focus_back(client, plan, anchor);
     if stranded.is_empty() {
         return format!("could not rebuild {}: {error}", plan.tab_id);
     }
@@ -1805,15 +1850,13 @@ fn bring_home(
 fn with_focus_restored(
     client: &mut SocketClient,
     plan: &GridPlan,
-    swapped: bool,
+    swapped: Option<&str>,
     error: String,
 ) -> String {
-    if !swapped {
+    let Some(last_source) = swapped else {
         return error;
-    }
-    if plan.focus_policy == BalanceFocusPolicy::Explicit {
-        let _ = client.request("pane.focus", json!({"pane_id": plan.focus_pane_id}));
-    }
+    };
+    hand_focus_back(client, plan, last_source);
     format!("swapped some panes but could not finish balancing: {error}")
 }
 
@@ -2264,6 +2307,25 @@ fn split_directions(node: &LayoutNode) -> Vec<SplitDirection> {
             .chain(split_directions(second))
             .collect(),
     }
+}
+
+/// Puts the panes an interrupted pass was arranging back in the order it was heading
+/// for, leaving every other pane in its geometric slot.
+fn resumed_order<'a>(order: Vec<&'a str>, interrupted: &[String]) -> Vec<&'a str> {
+    let was_arranged = |pane: &str| interrupted.iter().any(|id| id == pane);
+    let mut resumed = interrupted
+        .iter()
+        .filter_map(|id| order.iter().copied().find(|pane| *pane == id.as_str()));
+    order
+        .iter()
+        .map(|&pane| {
+            if was_arranged(pane) {
+                resumed.next().unwrap_or(pane)
+            } else {
+                pane
+            }
+        })
+        .collect()
 }
 
 fn reading_order(layout: &TabLayout) -> Vec<&str> {

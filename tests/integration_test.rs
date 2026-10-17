@@ -3445,6 +3445,167 @@ fn pane_focused_quietly_ignores_non_entry_and_non_balanceable_events() {
 }
 
 #[test]
+fn an_interrupted_automatic_arrangement_resumes_the_order_it_was_heading_for() {
+    // A pane closed mid-rebuild stops it after the recovery has strung the parked
+    // panes out beside the anchor. That geometry no longer tells which order the
+    // user had, so the hook carries on with the order it was heading for.
+    let entered = focused(tangled_snapshot(), "workspace-1", "tab-main", "pane-a");
+    let strung_out = focused(
+        tab_snapshot(vec![
+            pane("pane-a", 0, 0, 50, 100),
+            pane("pane-d", 50, 0, 50, 100),
+            pane("pane-c", 100, 0, 50, 100),
+            pane("pane-b", 150, 0, 50, 100),
+        ]),
+        "workspace-1",
+        "tab-main",
+        "pane-a",
+    );
+    let herdr = tangled_herdr()
+        .with_snapshot(entered.clone())
+        .with_replies(
+            "session.snapshot",
+            std::iter::repeat_n(snapshot_reply(entered), 5).chain([snapshot_reply(strung_out)]),
+        )
+        .with_replies(
+            "layout.export",
+            [
+                export_reply(split(
+                    "right",
+                    leaf("pane-a"),
+                    split(
+                        "down",
+                        leaf("pane-b"),
+                        split("down", leaf("pane-c"), leaf("pane-d")),
+                    ),
+                )),
+                export_reply(split(
+                    "right",
+                    leaf("pane-a"),
+                    split(
+                        "right",
+                        leaf("pane-d"),
+                        split("right", leaf("pane-c"), leaf("pane-b")),
+                    ),
+                )),
+                export_reply(grid(&[&["pane-a", "pane-b"], &["pane-c", "pane-d"]])),
+            ],
+        )
+        .with_replies(
+            "pane.move",
+            [
+                new_tab_reply("tab-scratch"),
+                move_reply(),
+                move_reply(),
+                Err("pane is gone".to_owned()),
+                move_reply(),
+                move_reply(),
+                move_reply(),
+                new_tab_reply("tab-scratch"),
+                move_reply(),
+            ],
+        );
+
+    let run = run_on_pane_focused(&herdr, "tab-main", "pane-a");
+
+    assert!(run.assert_failure().contains("pane is gone"));
+    let changes: Vec<_> = run
+        .requests
+        .into_iter()
+        .filter(|call| !matches!(call.method.as_str(), "session.snapshot" | "layout.export"))
+        .collect();
+    let resumed = [
+        move_call("pane-b", new_tab_destination()),
+        move_call("pane-c", scratch_destination()),
+        move_call("pane-d", scratch_destination()),
+        move_call("pane-c", attach_destination("pane-a", "down")),
+        move_call("pane-b", attach_destination("pane-a", "right")),
+        move_call("pane-d", attach_destination("pane-c", "right")),
+        ratio_call(&[], 0.5),
+        ratio_call(&[false], 0.5),
+        ratio_call(&[true], 0.5),
+    ];
+    assert!(changes.ends_with(&resumed), "{changes:#?}");
+}
+
+#[test]
+fn a_failed_automatic_arrangement_refocuses_the_users_pane_unless_they_moved_on() {
+    // herdr's pane.swap focuses its source, so a rebuild that fails after putting the
+    // first pane back in its slot has left its anchor focused. A focus the user moved
+    // elsewhere in the meantime stays where it is.
+    for (focus_at_failure, handed_back) in [("pane-b", true), ("pane-d", false)] {
+        let at = |pane_id| focused(tangled_snapshot(), "workspace-1", "tab-main", pane_id);
+        let settled = if handed_back {
+            "pane-c"
+        } else {
+            focus_at_failure
+        };
+        let tangled = || {
+            export_reply(split(
+                "right",
+                leaf("pane-a"),
+                split(
+                    "down",
+                    leaf("pane-b"),
+                    split("down", leaf("pane-c"), leaf("pane-d")),
+                ),
+            ))
+        };
+        let herdr = tangled_herdr()
+            .with_snapshot(at("pane-c"))
+            .with_replies(
+                "session.snapshot",
+                std::iter::repeat_n(snapshot_reply(at("pane-c")), 2)
+                    .chain(std::iter::repeat_n(snapshot_reply(at("pane-b")), 6))
+                    .chain([
+                        snapshot_reply(at(focus_at_failure)),
+                        snapshot_reply(at(settled)),
+                    ]),
+            )
+            .with_replies(
+                "layout.export",
+                [
+                    tangled(),
+                    tangled(),
+                    export_reply(grid(&[&["pane-a", "pane-b"], &["pane-c", "pane-d"]])),
+                ],
+            )
+            .with_replies(
+                "pane.move",
+                [
+                    new_tab_reply_with_source(
+                        "tab-scratch",
+                        focused_layout(
+                            "tab-main",
+                            "pane-b",
+                            vec![
+                                pane("pane-a", 0, 0, 100, 100),
+                                pane("pane-b", 100, 0, 100, 50),
+                                pane("pane-d", 100, 50, 100, 50),
+                            ],
+                        ),
+                    ),
+                    move_reply(),
+                ],
+            )
+            .with_replies("pane.swap", [swap_reply()]);
+
+        let run = run_on_pane_focused(&herdr, "tab-main", "pane-c");
+
+        assert!(
+            run.assert_failure()
+                .contains("tab-main did not come out as the expected grid")
+        );
+        assert!(run.requests.contains(&swap_call("pane-b", "pane-a")));
+        assert_eq!(
+            run.requests.contains(&focus_call("pane-c")),
+            handed_back,
+            "focus at failure: {focus_at_failure}"
+        );
+    }
+}
+
+#[test]
 fn automatic_arrangement_keeps_the_users_selection_and_ignores_queued_internal_events() {
     let entered = focused(tangled_snapshot(), "workspace-1", "tab-main", "pane-c");
     let mut herdr = tangled_herdr()
