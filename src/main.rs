@@ -460,6 +460,7 @@ fn run() -> Result<()> {
     let context = read_context(matches!(
         command,
         Command::Balance
+            | Command::CreatePane
             | Command::Focus(_)
             | Command::MoveDirectionally(_)
             | Command::MoveTabWorkspace(_)
@@ -1131,6 +1132,7 @@ fn balance_destination_before_entry(
 
 /// Inserts after the focused pane in reading order, which automatic balance preserves.
 fn create_pane(context: &Context, client: &mut SocketClient) -> Result<()> {
+    let _lock = lock_balance(context)?;
     let pane = prepare_pane_action(context, client)?;
     request_pane_split(client, &pane.pane_id, pane.split_direction)?;
     Ok(())
@@ -1204,8 +1206,8 @@ fn balance_focused_pane(
     )
 }
 
-/// Shared by hooks, manual balancing and tab-scoped moves before reading the
-/// session, and held for as long as the value lives.
+/// Shared by hooks, manual balancing, pane creation and tab-scoped moves before
+/// reading the session, and held for as long as the value lives.
 struct BalanceLock<'a> {
     state_dir: &'a Path,
     _file: File,

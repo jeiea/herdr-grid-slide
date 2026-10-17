@@ -1677,10 +1677,19 @@ fn failed_preparation_or_entry_keeps_the_previous_balance_record() {
 }
 
 #[test]
-fn manual_arrangement_and_tab_entry_wait_for_automatic_arrangement() {
-    for arguments in [&["focus", "left"][..], &["move", "left"], &["balance"]] {
+fn manual_arrangement_pane_creation_and_tab_entry_wait_for_automatic_arrangement() {
+    // A pane created mid-rebuild would split whichever pane the rebuild has parked
+    // focus on, and the interrupted rebuild would then settle that order.
+    let commands = [
+        &["focus", "left"][..],
+        &["move", "left"],
+        &["balance"],
+        &["new-pane"],
+    ];
+    for arguments in commands {
         let herdr = FakeHerdr::new(reordered_tab_snapshot())
-            .with_replies("layout.export", [export_reply(leaf("pane-a"))]);
+            .with_replies("layout.export", [export_reply(leaf("pane-a"))])
+            .with_replies("pane.split", [split_reply("pane-new")]);
         herdr.warm_up_binary();
         let held = herdr.hold_balance_lock();
         let run = thread::scope(|scope| {
