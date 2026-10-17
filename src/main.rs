@@ -328,10 +328,31 @@ struct GridPlan<'a> {
 
 /// The tab panes are parked in while their own tab is rebuilt around them.
 #[derive(Default)]
-struct ScratchTab<'a> {
+struct ScratchTab {
     expected_focus_pane_id: Option<String>,
-    panes: Vec<&'a str>,
+    panes: Vec<String>,
     tab_id: Option<String>,
+}
+
+impl ScratchTab {
+    /// Takes herdr's word for what is still parked once a pane leaves, because
+    /// another client may split a parked pane in the meantime.
+    fn unpark(&mut self, pane_id: &str, outcome: &MoveOutcome) {
+        match outcome
+            .source_layout
+            .as_ref()
+            .filter(|layout| self.tab_id.as_ref() == Some(&layout.tab_id))
+        {
+            Some(layout) => {
+                self.panes = layout
+                    .panes
+                    .iter()
+                    .map(|pane| pane.pane_id.clone())
+                    .collect();
+            }
+            None => self.panes.retain(|parked| parked != pane_id),
+        }
+    }
 }
 
 impl<'a> GridPlan<'a> {
@@ -1436,7 +1457,7 @@ fn rebuild_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
             .filter(|_| scratch.panes.is_empty())
             .unwrap_or(anchor);
         ensure_balance_focus_is_current(client, plan, (!background).then_some(expected_focus))
-            .map_err(|error| recovered(client, plan, anchor, &scratch, error))?;
+            .map_err(|error| recovered(client, plan, anchor, &mut scratch, error))?;
         let destination = match &scratch.tab_id {
             Some(tab_id) => tab_edge(tab_id),
             None => json!({"type": "new_tab", "workspace_id": plan.workspace_id}),
@@ -1451,9 +1472,9 @@ fn rebuild_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
                     scratch.expected_focus_pane_id = source_layout.focused_pane_id.clone();
                 }
                 scratch.tab_id = scratch.tab_id.or(outcome.created_tab.map(|tab| tab.tab_id));
-                scratch.panes.push(pane);
+                scratch.panes.push(pane.to_owned());
             }
-            Err(error) => return Err(recovered(client, plan, anchor, &scratch, error)),
+            Err(error) => return Err(recovered(client, plan, anchor, &mut scratch, error)),
         }
         if scratch.tab_id.is_none() {
             // Without the tab id there is nowhere to fetch the pane back from, so
@@ -1475,7 +1496,7 @@ fn rebuild_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
                         client,
                         plan,
                         anchor,
-                        &scratch,
+                        &mut scratch,
                         format!("herdr moved {pane} without reporting its remaining focus"),
                     )
                 })?;
@@ -1496,30 +1517,30 @@ fn rebuild_grid(client: &mut SocketClient, plan: &GridPlan) -> Result<()> {
     };
     for (pane, target, direction) in grid_moves(&plan.rows()) {
         ensure_balance_focus_is_current(client, plan, kept_focus)
-            .map_err(|error| recovered(client, plan, anchor, &scratch, error))?;
+            .map_err(|error| recovered(client, plan, anchor, &mut scratch, error))?;
         let pane = positioned(pane);
         let destination = attachment(plan.tab_id, positioned(target), direction);
-        if let Err(error) = move_pane_to(client, pane, destination) {
-            return Err(recovered(client, plan, anchor, &scratch, error));
-        }
-        scratch.panes.retain(|staged| *staged != pane);
+        let outcome = move_pane_to(client, pane, destination)
+            .map_err(|error| recovered(client, plan, anchor, &mut scratch, error))?;
+        scratch.unpark(pane, &outcome);
     }
     if anchor != first {
         ensure_balance_focus_is_current(client, plan, kept_focus)
-            .map_err(|error| recovered(client, plan, anchor, &scratch, error))?;
+            .map_err(|error| recovered(client, plan, anchor, &mut scratch, error))?;
         let swapped = request_pane_swap(client, anchor, first)
-            .map_err(|error| recovered(client, plan, anchor, &scratch, error))?;
+            .map_err(|error| recovered(client, plan, anchor, &mut scratch, error))?;
         if let Some(reason) = swapped.refusal_reason() {
             return Err(recovered(
                 client,
                 plan,
                 anchor,
-                &scratch,
+                &mut scratch,
                 format!("herdr refused to restore the pane order: {reason}"),
             ));
         }
     }
-    match settle_rebuilt_grid(client, plan) {
+    let settled = settle_rebuilt_grid(client, plan);
+    match settled.and(bring_newcomers_home(client, plan, anchor, &mut scratch)) {
         Ok(()) if plan.focus_policy == BalanceFocusPolicy::Explicit => {
             client.request("pane.focus", json!({"pane_id": plan.focus_pane_id}))?;
             Ok(())
@@ -1556,6 +1577,27 @@ fn restore_focus_after_success(
         client.request("pane.focus", json!({"pane_id": plan.focus_pane_id}))?;
     }
     Ok(())
+}
+
+/// herdr closes the scratch tab only once it is empty, so a pane another client
+/// opened there while the rebuild ran would otherwise stay behind in a tab of its
+/// own, whether or not the grid settled. Fetching it changes the pane set, which
+/// the next automatic pass balances.
+fn bring_newcomers_home(
+    client: &mut SocketClient,
+    plan: &GridPlan,
+    anchor: &str,
+    scratch: &mut ScratchTab,
+) -> Result<()> {
+    let stranded = bring_home(client, plan, anchor, scratch);
+    match &scratch.tab_id {
+        Some(scratch_tab) if !stranded.is_empty() => Err(format!(
+            "rebuilt {} but {} left in {scratch_tab}",
+            plan.tab_id,
+            stranded.join(", ")
+        )),
+        _ => Ok(()),
+    }
 }
 
 /// Checks the rebuilt tab came out as planned and evens out its splits.
@@ -1713,19 +1755,13 @@ fn recovered(
     client: &mut SocketClient,
     plan: &GridPlan,
     anchor: &str,
-    scratch: &ScratchTab,
+    scratch: &mut ScratchTab,
     error: String,
 ) -> String {
-    let Some(scratch_tab) = &scratch.tab_id else {
+    let Some(scratch_tab) = scratch.tab_id.clone() else {
         return error;
     };
-    let mut stranded = Vec::new();
-    for pane in &scratch.panes {
-        let destination = attachment(plan.tab_id, anchor, SplitDirection::Right);
-        if move_pane_to(client, pane, destination).is_err() {
-            stranded.push(*pane);
-        }
-    }
+    let stranded = bring_home(client, plan, anchor, scratch);
     if plan.focus_policy == BalanceFocusPolicy::Explicit {
         let _ = client.request("pane.focus", json!({"pane_id": plan.focus_pane_id}));
     }
@@ -1737,6 +1773,28 @@ fn recovered(
         plan.tab_id,
         stranded.join(", ")
     )
+}
+
+fn bring_home(
+    client: &mut SocketClient,
+    plan: &GridPlan,
+    anchor: &str,
+    scratch: &mut ScratchTab,
+) -> Vec<String> {
+    let mut stranded = Vec::new();
+    while let Some(pane) = scratch
+        .panes
+        .iter()
+        .find(|pane| !stranded.contains(*pane))
+        .cloned()
+    {
+        let destination = attachment(plan.tab_id, anchor, SplitDirection::Right);
+        match move_pane_to(client, &pane, destination) {
+            Ok(outcome) => scratch.unpark(&pane, &outcome),
+            Err(_) => stranded.push(pane),
+        }
+    }
+    stranded
 }
 
 /// Reports a failure that struck after panes had already been traded. The layout is

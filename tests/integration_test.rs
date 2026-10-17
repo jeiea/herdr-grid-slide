@@ -4319,17 +4319,84 @@ fn balance_puts_staged_panes_back_when_a_move_fails() {
 }
 
 #[test]
+fn balance_keeps_panes_another_client_opens_meanwhile_in_the_balanced_tab() {
+    // A delegate splitting the last pane of its busiest tab can hit a pane that is
+    // parked for a rebuild. herdr closes the scratch tab only once it is empty, so
+    // the newcomers would otherwise be left behind in a tab of their own. pane-y
+    // arrives while pane-x is being fetched.
+    let herdr = tangled_herdr()
+        .with_replies(
+            "layout.export",
+            [
+                export_reply(split(
+                    "right",
+                    leaf("pane-a"),
+                    split(
+                        "down",
+                        leaf("pane-b"),
+                        split("down", leaf("pane-c"), leaf("pane-d")),
+                    ),
+                )),
+                export_reply(split(
+                    "down",
+                    split("right", leaf("pane-a"), leaf("pane-b")),
+                    split("right", leaf("pane-c"), leaf("pane-d")),
+                )),
+            ],
+        )
+        .with_replies(
+            "pane.move",
+            [
+                new_tab_reply("tab-scratch"),
+                move_reply(),
+                move_reply(),
+                unparked_reply(&["pane-b", "pane-d", "pane-x"]),
+                unparked_reply(&["pane-d", "pane-x"]),
+                unparked_reply(&["pane-x"]),
+                unparked_reply(&["pane-y"]),
+                move_reply(),
+            ],
+        );
+
+    let run = run_balance(&herdr, "pane-a");
+
+    run.assert_success();
+    assert_eq!(
+        run.requests,
+        [
+            snapshot_call(),
+            export_call(),
+            move_call("pane-b", new_tab_destination()),
+            move_call("pane-c", scratch_destination()),
+            move_call("pane-d", scratch_destination()),
+            move_call("pane-c", attach_destination("pane-a", "down")),
+            move_call("pane-b", attach_destination("pane-a", "right")),
+            move_call("pane-d", attach_destination("pane-c", "right")),
+            export_call(),
+            ratio_call(&[], 0.5),
+            ratio_call(&[false], 0.5),
+            ratio_call(&[true], 0.5),
+            move_call("pane-x", attach_destination("pane-a", "right")),
+            move_call("pane-y", attach_destination("pane-a", "right")),
+            focus_call("pane-a"),
+        ]
+    );
+}
+
+#[test]
 fn balance_brings_back_only_what_is_still_in_the_scratch_tab() {
-    // The second reattachment fails once pane-c is already home, so only pane-b and
-    // pane-d are still parked and only they are fetched back.
+    // The second reattachment fails once pane-c is already home, so only pane-b,
+    // pane-d and the panes another client split off parked ones are fetched back:
+    // pane-x before the failure and pane-y while pane-b is on its way home.
     let herdr = tangled_herdr().with_replies(
         "pane.move",
         [
             new_tab_reply("tab-scratch"),
             move_reply(),
             move_reply(),
-            move_reply(),
+            unparked_reply(&["pane-b", "pane-d", "pane-x"]),
             Err("pane is gone".to_owned()),
+            unparked_reply(&["pane-d", "pane-x", "pane-y"]),
             move_reply(),
         ],
     );
@@ -4353,6 +4420,8 @@ fn balance_brings_back_only_what_is_still_in_the_scratch_tab() {
             move_call("pane-b", attach_destination("pane-a", "right")),
             move_call("pane-b", attach_destination("pane-a", "right")),
             move_call("pane-d", attach_destination("pane-a", "right")),
+            move_call("pane-x", attach_destination("pane-a", "right")),
+            move_call("pane-y", attach_destination("pane-a", "right")),
             focus_call("pane-a"),
         ]
     );
@@ -4497,7 +4566,8 @@ fn balance_names_the_panes_it_could_not_bring_back() {
 #[test]
 fn balance_stops_when_the_rebuilt_tab_is_not_the_grid() {
     // A pane went missing while the tab was being rebuilt, so the paths worked out
-    // from this tree would point at the wrong panes.
+    // from this tree would point at the wrong panes. pane-x, which another client
+    // opened in the scratch tab, still comes home.
     let herdr = tangled_herdr()
         .with_replies(
             "layout.export",
@@ -4518,7 +4588,18 @@ fn balance_stops_when_the_rebuilt_tab_is_not_the_grid() {
                 )),
             ],
         )
-        .with_replies("pane.move", [new_tab_reply("tab-scratch"), move_reply()]);
+        .with_replies(
+            "pane.move",
+            [
+                new_tab_reply("tab-scratch"),
+                move_reply(),
+                move_reply(),
+                move_reply(),
+                move_reply(),
+                unparked_reply(&["pane-x"]),
+                move_reply(),
+            ],
+        );
 
     let run = run_balance(&herdr, "pane-a");
 
@@ -4531,7 +4612,13 @@ fn balance_stops_when_the_rebuilt_tab_is_not_the_grid() {
             .iter()
             .any(|call| call.method == "layout.set_split_ratio")
     );
-    assert_eq!(run.requests.last(), Some(&focus_call("pane-a")));
+    assert_eq!(
+        run.requests[run.requests.len() - 2..],
+        [
+            move_call("pane-x", attach_destination("pane-a", "right")),
+            focus_call("pane-a"),
+        ]
+    );
 }
 
 #[test]
@@ -5534,6 +5621,21 @@ fn move_reply() -> Reply {
         ("pane-moved", "workspace-1", "tab-main"),
         (
             None,
+            layout("tab-main", vec![pane("pane-moved", 0, 0, 100, 100)]),
+        ),
+    )
+}
+
+/// A pane leaving the scratch tab, which herdr reports with what is still parked.
+fn unparked_reply(parked: &[&str]) -> Reply {
+    successful_move_reply(
+        ("pane-moved", "workspace-1", "tab-scratch"),
+        ("pane-moved", "workspace-1", "tab-main"),
+        (
+            Some(layout(
+                "tab-scratch",
+                parked.iter().map(|id| pane(id, 0, 0, 100, 100)).collect(),
+            )),
             layout("tab-main", vec![pane("pane-moved", 0, 0, 100, 100)]),
         ),
     )
