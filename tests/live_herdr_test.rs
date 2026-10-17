@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
-const HERDR_VERSION: &str = "herdr 0.8.2";
+const HERDR_VERSION: &str = "herdr 0.9.5";
 const PLUGIN_ID: &str = "jeiea.grid-slide";
 const POLL_INTERVAL: Duration = Duration::from_millis(25);
 const READY_TIMEOUT: Duration = Duration::from_secs(10);
